@@ -2,7 +2,7 @@
   "id": "translate",
   "name": "Translate",
   "word": "translate",
-  "description": "Translate text to English via Google Translate",
+  "description": "Translate text to English via DeepL",
   "icon": "tools-check-spelling-symbolic",
   "shortcut": "",
   "version": "1.0.0",
@@ -10,6 +10,6 @@
   "help": "Trigger: translate\n\nType \"translate <text>\" to translate it into English.",
   "action": {
     "type": "web",
-    "url": "https://translate.google.com/?sl=auto&tl=en&text={query}"
+    "url": "https://www.deepl.com/translator#auto/en/{query}"
   }
 }

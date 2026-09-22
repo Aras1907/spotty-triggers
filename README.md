@@ -1,30 +1,30 @@
-# Spotty Add-ons
+# Spotty Triggers
 
 Trigger keywords for [Spotty](https://github.com/spotty/spotty), the Raycast-style
-launcher for GNOME. Install any add-on from the Add-ons window in Spotty
-(Settings → Add-ons → Browse Add-ons), or import a manifest file manually.
+launcher for GNOME. Install any trigger from the Triggers window in Spotty
+(Settings → Triggers → Browse Triggers), or import a manifest file manually.
 
 ## Repository layout
 
 ```
 index.json            ← browse listing (shown in the marketplace)
-addons/<id>.json      ← one manifest per add-on
+triggers/<id>.json      ← one manifest per trigger
 ```
 
-Spotty fetches `index.json` for the list and `addons/<id>.json` on install.
+Spotty fetches `index.json` for the list and `triggers/<id>.json` on install.
 The default repository URL is:
 
 ```
-https://raw.githubusercontent.com/<your-user>/spotty-addons/main
+https://raw.githubusercontent.com/<your-user>/spotty-triggers/main
 ```
 
 You can also point the marketplace at a local copy for testing:
 
 ```
-file:///home/you/spotty-addons
+file:///home/you/spotty-triggers
 ```
 
-## Authoring an add-on
+## Authoring a trigger
 
 A manifest is a JSON file with three action types:
 
@@ -94,14 +94,14 @@ An empty `extensions` list means "all files" (like the built-in `find`).
 
 **Security:** `{query}` is single-quote-escaped by Spotty — user input can
 never inject extra shell commands, only the command template you write runs.
-Do NOT wrap `{query}` in your own quotes. Because shell add-ons run commands
+Do NOT wrap `{query}` in your own quotes. Because shell triggers run commands
 as the user, Spotty shows the exact command and asks for confirmation at
-install time. Users should only install shell add-ons they trust.
+install time. Users should only install shell triggers they trust.
 
 ### `help` and `help_image` (optional)
 
-`help` is usage text shown in the preview panel when the add-on is selected
-in the `addons` search; when omitted, Spotty generates instructions from the
+`help` is usage text shown in the preview panel when the trigger is selected
+in the `triggers` search; when omitted, Spotty generates instructions from the
 action type. `help_image` is an optional URL of a screenshot rendered below
 the text (downloaded once and cached):
 
@@ -127,18 +127,18 @@ the text (downloaded once and cached):
 ### `shortcut`
 
 Optional GNOME-style global shortcut (e.g. `"Super+Ctrl+D"`) that opens
-Spotty directly in the add-on's mode. Registered on install, removed on
+Spotty directly in the trigger's mode. Registered on install, removed on
 uninstall.
 
 ### Rules
 
 - `id` must be unique, lowercase, and use only letters, digits, `_`, `-`, `.`
 - `word` is the trigger text — it must not collide with a built-in trigger
-  (`find`, `clip`, `app`, `cmd`, `emoji`, `music`) or another add-on
+  (`find`, `clip`, `app`, `cmd`, `emoji`) or another trigger
 - keep `name` short; `summary` (index only) shows under the name in the
   marketplace
 
-## Submitting an add-on
+## Submitting a trigger
 
-1. Write the manifest under `addons/`, add it to `index.json`
+1. Write the manifest under `triggers/`, add it to `index.json`
 2. Open a pull request
