@@ -1,0 +1,32 @@
+[
+  {
+    "id": "bluetooth",
+    "name": "Bluetooth",
+    "word": "bt",
+    "description": "Connect, disconnect, pair, scan and power Bluetooth devices",
+    "icon": "bluetooth-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": ""
+  },
+  {
+    "id": "dictionary",
+    "name": "Dictionary",
+    "word": "dict",
+    "description": "Look up a word definition",
+    "icon": "accessories-dictionary-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": ""
+  },
+  {
+    "id": "translate",
+    "name": "Translate",
+    "word": "translate",
+    "description": "Translate text to English via DeepL",
+    "icon": "tools-check-spelling-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": ""
+  }
+]

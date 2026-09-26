@@ -1,8 +1,12 @@
 # Spotty Triggers
 
 Trigger keywords for [Spotty](https://github.com/Aras1907/Spotty), the Raycast-style
-launcher for GNOME. There is no in-app marketplace: download a manifest file from
-this repository and import it locally.
+launcher for GNOME. Spotty reads [`index.json`](index.json) and the manifests in
+[`triggers/`](triggers/) **directly from this repository** — open
+**Settings → Trigger → Store** and the list (words, descriptions,
+icons, everything) arrives straight from GitHub. You can also download a
+manifest file and import it locally (see
+[Install a trigger from a file](#install-a-trigger-from-a-file)).
 
 ## Install a trigger from a file
 
@@ -30,8 +34,18 @@ so a bad file can't break the app.
 ## Repository layout
 
 ```
-triggers/<id>.json   ← one manifest per trigger — download and import
+index.json           ← browse listing: id, name, word, description, icon,
+                        version, author, shortcut — everything Spotty shows
+                        in Settings → Trigger → Store
+triggers/<id>.json   ← one manifest per trigger — the full install payload
+                        (adds help/help_image and the action)
 ```
+
+Spotty's trigger repository URL defaults to
+`https://raw.githubusercontent.com/Aras1907/spotty-triggers/main`, so any
+static host serving this layout works — raw GitHub or your own mirror
+(set `trigger_repo_url` in `~/.config/spotty/config.json`; there is no UI
+field for it).
 
 ## Authoring a trigger
 
@@ -148,8 +162,9 @@ uninstall.
 
 ## Submitting a trigger
 
-1. Write the manifest under `triggers/` and add it to the table above
-2. Open a pull request
+1. Write the manifest under `triggers/`
+2. Add it to `index.json` and the table above
+3. Open a pull request
 
 You (and everyone else) can already install it from your branch with
 [Install a trigger from a file](#install-a-trigger-from-a-file) using the
