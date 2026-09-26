@@ -1,15 +1,5 @@
 [
   {
-    "id": "bluetooth",
-    "name": "Bluetooth",
-    "word": "bt",
-    "description": "Connect, disconnect, pair, scan and power Bluetooth devices",
-    "icon": "bluetooth-symbolic",
-    "version": "1.0.0",
-    "author": "spotty",
-    "shortcut": ""
-  },
-  {
     "id": "dictionary",
     "name": "Dictionary",
     "word": "dict",

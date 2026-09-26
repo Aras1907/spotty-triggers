@@ -29,7 +29,7 @@ so a bad file can't break the app.
 |---|---|---|
 | [`triggers/dictionary.json`](triggers/dictionary.json) | `dict` | Look up a word definition — inline definitions while typing, dictionary.com on Enter |
 | [`triggers/translate.json`](triggers/translate.json) | `translate` | Translate text to English via DeepL |
-| [`triggers/bluetooth.json`](triggers/bluetooth.json) | `bt` | Connect, disconnect, pair, scan and power Bluetooth devices — *built into Spotty since v6; this manifest exists for compatibility* |
+| [`triggers/bluetooth.json`](triggers/bluetooth.json) | `bt` | Connect, disconnect, pair, scan and power Bluetooth devices — *built into Spotty since v6: not listed in the Store, kept here for manual import* |
 
 ## Repository layout
 
