@@ -1,48 +1,37 @@
 # Spotty Triggers
 
 Trigger keywords for [Spotty](https://github.com/Aras1907/Spotty), the Raycast-style
-launcher for GNOME. Install any trigger from the Triggers window in Spotty
-(Settings → Triggers → Browse New Trigger), or import a manifest file you
-downloaded from this repository — see
-[Install a trigger from a file](#install-a-trigger-from-a-file).
-
-## Repository layout
-
-```
-index.json            ← browse listing (shown in the marketplace)
-triggers/<id>.json      ← one manifest per trigger
-```
-
-Spotty fetches `index.json` for the list and `triggers/<id>.json` on install.
-The default repository URL is:
-
-```
-https://raw.githubusercontent.com/Aras1907/spotty-triggers/main
-```
-
-You can also point the marketplace at a local copy for testing by setting
-`trigger_repo_url` in `~/.config/spotty/config.json`:
-
-```
-file:///home/you/path/to/spotty-triggers
-```
+launcher for GNOME. There is no in-app marketplace: download a manifest file from
+this repository and import it locally.
 
 ## Install a trigger from a file
 
-No marketplace needed — you can download any trigger straight from GitHub
-and load it into Spotty:
-
 1. Open the trigger's file under [`triggers/`](triggers/) on GitHub
-   (e.g. [`triggers/dictionary.json`](triggers/dictionary.json)) and
-   download it — **Code → Download raw file**, or:
+   (e.g. [`triggers/dictionary.json`](triggers/dictionary.json)) and download it —
+   **Code → Download raw file**, or:
    `curl -LO https://raw.githubusercontent.com/Aras1907/spotty-triggers/main/triggers/dictionary.json`
-2. In Spotty: **Settings → Triggers → Import Trigger File…**
+2. In Spotty: **Settings → Triggers → +** (or **Import Trigger File…** in the
+   Triggers window).
 3. Pick the downloaded `.json` file — Spotty validates it and installs it
    immediately.
 
 Shell triggers additionally show a confirmation dialog with the exact
 command before installing. A malformed manifest is rejected with an error,
 so a bad file can't break the app.
+
+## Available triggers
+
+| Manifest | Trigger word | What it does |
+|---|---|---|
+| [`triggers/dictionary.json`](triggers/dictionary.json) | `dict` | Look up a word definition — inline definitions while typing, dictionary.com on Enter |
+| [`triggers/translate.json`](triggers/translate.json) | `translate` | Translate text to English via DeepL |
+| [`triggers/bluetooth.json`](triggers/bluetooth.json) | `bt` | Connect, disconnect, pair, scan and power Bluetooth devices — *built into Spotty since v6; this manifest exists for compatibility* |
+
+## Repository layout
+
+```
+triggers/<id>.json   ← one manifest per trigger — download and import
+```
 
 ## Authoring a trigger
 
@@ -154,15 +143,14 @@ uninstall.
 
 - `id` must be unique, lowercase, and use only letters, digits, `_`, `-`, `.`
 - `word` is the trigger text — it must not collide with a built-in trigger
-  (`find`, `clip`, `app`, `cmd`, `emoji`) or another trigger
-- keep `name` short; `summary` (index only) shows under the name in the
-  marketplace
+  (`find`, `clip`, `app`, `cmd`, `emoji`, `bt`) or another trigger
+- keep `name` short — it's what shows on the trigger row
 
 ## Submitting a trigger
 
-1. Write the manifest under `triggers/`, add it to `index.json`
+1. Write the manifest under `triggers/` and add it to the table above
 2. Open a pull request
 
-Until it is merged, users can install it right away with
-[Import Trigger File…](#install-a-trigger-from-a-file) using the raw file
-from your branch.
+You (and everyone else) can already install it from your branch with
+[Install a trigger from a file](#install-a-trigger-from-a-file) using the
+raw file.
