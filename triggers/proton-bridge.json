@@ -1,0 +1,17 @@
+{
+  "id": "proton-bridge",
+  "name": "Proton Mail Bridge",
+  "word": "proton",
+  "description": "Sign in to Proton Mail Bridge and keep your mail connected in the background",
+  "icon": "mail-send-receive-symbolic",
+  "shortcut": "",
+  "version": "1.0.0",
+  "author": "spotty",
+  "native": false,
+  "preinstalled": false,
+  "help": "Trigger: proton (optional Store install)\n\nType \"proton login\" or \"proton open\" and press Enter to open the installed Proton Mail Bridge app. Sign in inside Bridge, including any two-factor authentication. Never type passwords after the trigger. Bridge manages the saved account and credentials using its own encrypted storage and your Linux keyring.\n\nType \"proton start\" to launch Bridge without showing its window. Sign in once with \"proton login\" before using this command. Closing the Bridge window keeps mail connected; choosing Quit Bridge stops it. In Bridge Settings, keep \"Open on startup\" enabled to reconnect after you log in to your desktop.\n\nType \"proton install\" to open Proton's official installation guide, or \"proton help\" for command help. If protonmail-bridge is not installed or is not on PATH, login/open/start opens the installation guide. Install Proton's native Linux package separately; this trigger does not install Bridge automatically.\n\nRequires a paid Proton plan that includes Mail and a working Linux keyring (such as GNOME Keyring). Configure Thunderbird or another IMAP/SMTP client using the local connection details and Bridge-generated password shown in Bridge. Removing this trigger does not sign out, quit Bridge, or change Bridge's startup setting.\n\nSetup: https://proton.me/support/protonmail-bridge-install\nStartup: https://proton.me/support/automatically-start-bridge",
+  "action": {
+    "type": "shell",
+    "command": "case {query} in\n  login|open) set -- ;;\n  start) set -- --no-window ;;\n  install) exec xdg-open https://proton.me/support/protonmail-bridge-install ;;\n  help) printf '%s\\n' 'proton login / proton open: open Bridge and sign in there.' 'proton start: launch Bridge in the background after signing in.' 'proton install: open the official installation guide.' 'In Bridge Settings, enable Open on startup to reconnect at desktop login.' 'Close the window to keep mail connected; Quit Bridge stops it.' 'Use the Bridge-generated password and local IMAP/SMTP settings in your mail client.' 'Requires native protonmail-bridge on PATH, a Linux keyring, and a paid Proton Mail plan.' 'Setup: https://proton.me/support/protonmail-bridge-install'; exit 0 ;;\n  *) printf '%s\\n' 'Use proton login, proton open, proton start, proton install, or proton help. Sign in only inside Bridge.' >&2; exit 2 ;;\nesac\nif ! command -v protonmail-bridge >/dev/null 2>&1; then\n  printf '%s\\n' 'Proton Mail Bridge is not installed or not on PATH. Opening the official installation guide.'\n  exec xdg-open https://proton.me/support/protonmail-bridge-install\nfi\nif ! command -v nohup >/dev/null 2>&1; then\n  printf '%s\\n' 'nohup is required to keep Bridge running after the launcher closes.' >&2\n  exit 1\nfi\nnohup protonmail-bridge \"$@\" </dev/null >/dev/null 2>&1 &\nprintf '%s\\n' 'Launch requested. Bridge manages your login and background mail connection. For startup errors, open Bridge directly and check its logs.'"
+  }
+}

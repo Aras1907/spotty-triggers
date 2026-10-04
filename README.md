@@ -45,6 +45,7 @@ a vulnerability.
 | [`triggers/updates.json`](triggers/updates.json) | Install from Store | Check and install updates |
 | [`triggers/dictionary.json`](triggers/dictionary.json) | `dict` | Look up a word definition |
 | [`triggers/translate.json`](triggers/translate.json) | `translate` | Translate text locally — detects the language, targets your system language |
+| [`triggers/proton-bridge.json`](triggers/proton-bridge.json) | `proton` (optional Store install) | Open Proton Mail Bridge to sign in and keep mail connected in the background |
 
 The six native result providers start uninstalled. Install one from the Store
 to add it to regular search. Then set an optional word or shortcut in Spotty
@@ -59,6 +60,39 @@ live in [`src/features/`](src/features/), and feature settings dialogs in
 [`src/ui/feature_settings.rs`](src/ui/feature_settings.rs). Installing
 or removing them preserves customized words, shortcuts, and ordering. App
 Management is a core backend and cannot be removed.
+
+## Proton Mail Bridge (optional)
+
+In **Settings → Triggers → Store**, install **Proton Mail Bridge**. It starts
+uninstalled and uses the existing shell trigger support, so adding it to a
+Cargo-installed Spotty does not require a rebuild. You can also import
+[`triggers/proton-bridge.json`](triggers/proton-bridge.json). Spotty shows the
+shell command for approval when you install the trigger.
+
+Install the native Linux `protonmail-bridge` package separately using
+[Proton's installation guide](https://proton.me/support/protonmail-bridge-install).
+Bridge requires a paid Proton plan that includes Mail and a working Linux
+keyring, such as GNOME Keyring. The trigger opens the guide if the executable
+is missing from `PATH`; it does not install packages automatically or use
+Flatpak.
+
+| Command | Action |
+|---|---|
+| `proton login` or `proton open` | Open Bridge's window to sign in or manage accounts |
+| `proton start` | Launch Bridge without showing its window, using the saved login |
+| `proton install` | Open Proton's official installation guide |
+| `proton help` | Show command help inside Spotty |
+
+Sign in inside Bridge, including any two-factor authentication. Bridge owns
+the saved account and credentials; enter passwords only in its window.
+Configure your email client with the local IMAP/SMTP details and the
+Bridge-generated password displayed in Bridge.
+
+Closing Bridge's window keeps it running in the background, independently of
+Spotty. Keep **Settings → Open on startup** enabled in Bridge to reconnect at
+desktop login ([startup instructions](https://proton.me/support/automatically-start-bridge)).
+Choosing **Quit Bridge** stops mail connectivity. Removing the Spotty trigger
+does not sign out of Bridge or change its startup setting.
 
 ## Repository layout
 
