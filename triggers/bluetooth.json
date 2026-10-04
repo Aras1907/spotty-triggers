@@ -2,14 +2,14 @@
   "id": "bluetooth",
   "name": "Bluetooth",
   "word": "bt",
-  "description": "Connect, disconnect, pair, scan and power Bluetooth devices",
-  "icon": "bluetooth-symbolic",
-  "shortcut": "",
+  "description": "Bluetooth devices",
+  "icon": "bluetooth-active-symbolic",
   "version": "1.0.0",
   "author": "spotty",
-  "help": "Trigger: bt\n\nType \"bt\" to see your Bluetooth status and devices:\n- Enter toggles the adapter on/off\n- Connected devices: Enter to disconnect\n- Available devices: Enter to connect (unpaired ones pair first)\n- \"Scan for devices\" discovers new devices\n\nType \"bt <query>\" to filter the list by device name or MAC address.",
+  "shortcut": "Super+Ctrl+B",
+  "builtin": true,
+  "help": "Type bt to browse Bluetooth devices, scan, pair, connect, disconnect, and control Bluetooth power.",
   "action": {
-    "type": "shell",
-    "command": "bluetoothctl devices"
+    "type": "builtin"
   }
 }

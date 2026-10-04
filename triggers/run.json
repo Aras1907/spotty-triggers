@@ -1,0 +1,15 @@
+{
+  "id": "run",
+  "name": "Command",
+  "word": "cmd",
+  "description": "Run a command",
+  "icon": "utilities-terminal-symbolic",
+  "version": "1.0.0",
+  "author": "spotty",
+  "shortcut": "Super+Ctrl+T",
+  "builtin": true,
+  "help": "Type cmd followed by a command to run it. Commands run only when you activate the result.",
+  "action": {
+    "type": "builtin"
+  }
+}

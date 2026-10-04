@@ -1,5 +1,137 @@
 [
   {
+    "id": "files",
+    "name": "Find",
+    "word": "find",
+    "description": "Search all files and folders",
+    "icon": "system-search-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": "Super+Ctrl+F",
+    "builtin": true
+  },
+  {
+    "id": "clipboard",
+    "name": "Clipboard",
+    "word": "clip",
+    "description": "Search clipboard history",
+    "icon": "edit-paste-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": "Super+Ctrl+V",
+    "builtin": true
+  },
+  {
+    "id": "cmd",
+    "name": "App Management",
+    "word": "app",
+    "description": "Install, uninstall, and manage apps",
+    "icon": "application-x-executable-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": "Super+Ctrl+A",
+    "builtin": true
+  },
+  {
+    "id": "run",
+    "name": "Command",
+    "word": "cmd",
+    "description": "Run a command",
+    "icon": "utilities-terminal-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": "Super+Ctrl+T",
+    "builtin": true
+  },
+  {
+    "id": "emoji",
+    "name": "Emoji",
+    "word": "emoji",
+    "description": "Search emoji",
+    "icon": "face-smile-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": "Super+Ctrl+E",
+    "builtin": true
+  },
+  {
+    "id": "bluetooth",
+    "name": "Bluetooth",
+    "word": "bt",
+    "description": "Bluetooth devices",
+    "icon": "bluetooth-active-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": "Super+Ctrl+B",
+    "builtin": true
+  },
+  {
+    "id": "apps",
+    "name": "Apps",
+    "word": "",
+    "description": "Search installed applications",
+    "icon": "view-app-grid-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": "",
+    "builtin": true
+  },
+  {
+    "id": "newapps",
+    "name": "New Apps",
+    "word": "",
+    "description": "Search apps you can install",
+    "icon": "spotty-store-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": "",
+    "builtin": true
+  },
+  {
+    "id": "web",
+    "name": "Web",
+    "word": "",
+    "description": "Search the web",
+    "icon": "web-browser-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": "",
+    "builtin": true
+  },
+  {
+    "id": "calc",
+    "name": "Calculator",
+    "word": "",
+    "description": "Calculate arithmetic",
+    "icon": "accessories-calculator-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": "",
+    "builtin": true
+  },
+  {
+    "id": "convert",
+    "name": "Conversions",
+    "word": "",
+    "description": "Convert units, currency and number bases",
+    "icon": "network-transmit-receive-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": "",
+    "builtin": true
+  },
+  {
+    "id": "updates",
+    "name": "Updates",
+    "word": "",
+    "description": "Check and install updates",
+    "icon": "software-update-available-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": "",
+    "builtin": true
+  },
+  {
     "id": "dictionary",
     "name": "Dictionary",
     "word": "dict",
@@ -13,9 +145,9 @@
     "id": "translate",
     "name": "Translate",
     "word": "translate",
-    "description": "Translate text to English via DeepL",
+    "description": "Translate text locally — detects the language, targets your system language",
     "icon": "tools-check-spelling-symbolic",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "author": "spotty",
     "shortcut": ""
   }

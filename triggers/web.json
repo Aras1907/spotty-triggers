@@ -1,0 +1,15 @@
+{
+  "id": "web",
+  "name": "Web",
+  "word": "",
+  "description": "Search the web",
+  "icon": "web-browser-symbolic",
+  "version": "1.0.0",
+  "author": "spotty",
+  "shortcut": "",
+  "builtin": true,
+  "help": "Search the web from regular search using your configured search engine. Assign a trigger word or shortcut in Settings for a dedicated mode.",
+  "action": {
+    "type": "builtin"
+  }
+}

@@ -20,22 +20,44 @@ manifest file and import it locally (see
    immediately.
 
 Shell triggers additionally show a confirmation dialog with the exact
-command before installing. A malformed manifest is rejected with an error,
+command before installing; web and file triggers install directly (they
+cannot run code). A malformed manifest is rejected with an error,
 so a bad file can't break the app.
 
-## Available triggers
+## Available triggers and results
 
-| Manifest | Trigger word | What it does |
+| Manifest | Default word | What it does |
 |---|---|---|
-| [`triggers/dictionary.json`](triggers/dictionary.json) | `dict` | Look up a word definition — inline definitions while typing, dictionary.com on Enter |
-| [`triggers/translate.json`](triggers/translate.json) | `translate` | Translate text to English via DeepL |
-| [`triggers/bluetooth.json`](triggers/bluetooth.json) | `bt` | Connect, disconnect, pair, scan and power Bluetooth devices — *built into Spotty since v6: not listed in the Store, kept here for manual import* |
+| [`triggers/files.json`](triggers/files.json) | `find` | Search all files and folders |
+| [`triggers/clipboard.json`](triggers/clipboard.json) | `clip` | Search clipboard history |
+| [`triggers/cmd.json`](triggers/cmd.json) | `app` | Install, uninstall, and manage apps |
+| [`triggers/run.json`](triggers/run.json) | `cmd` | Run a command |
+| [`triggers/emoji.json`](triggers/emoji.json) | `emoji` | Search emoji |
+| [`triggers/bluetooth.json`](triggers/bluetooth.json) | `bt` | Bluetooth devices |
+| [`triggers/apps.json`](triggers/apps.json) | Regular search | Search installed applications |
+| [`triggers/newapps.json`](triggers/newapps.json) | Regular search | Search apps you can install |
+| [`triggers/web.json`](triggers/web.json) | Regular search | Search the web |
+| [`triggers/calc.json`](triggers/calc.json) | Regular search | Calculate arithmetic |
+| [`triggers/convert.json`](triggers/convert.json) | Regular search | Convert units, currency and number bases |
+| [`triggers/updates.json`](triggers/updates.json) | Regular search | Check and install updates |
+| [`triggers/dictionary.json`](triggers/dictionary.json) | `dict` | Look up a word definition |
+| [`triggers/translate.json`](triggers/translate.json) | `translate` | Translate text locally — detects the language, targets your system language |
+
+The six result types have no trigger word by default. Set a word or shortcut
+in Spotty Settings to open their dedicated modes. Native entries require the
+Spotty version that supports the repository catalog. Older versions can still
+install Dictionary and Translate.
+
+Native entries enable backends shipped with Spotty; their Rust code stays in
+the [Spotty source repository](https://github.com/Aras1907/Spotty). Installing
+or removing them preserves customized words, shortcuts, and ordering. App
+Management is a core backend and cannot be removed.
 
 ## Repository layout
 
 ```
 index.json           ← browse listing: id, name, word, description, icon,
-                        version, author, shortcut — everything Spotty shows
+                        version, author, shortcut, builtin — everything Spotty shows
                         in Settings → Trigger → Store
 triggers/<id>.json   ← one manifest per trigger — the full install payload
                         (adds help/help_image and the action)
@@ -49,7 +71,18 @@ field for it).
 
 ## Authoring a trigger
 
-A manifest is a JSON file with three action types:
+A manifest is a JSON file with the following action types:
+
+### `builtin` — enable a native backend
+
+Native entries have `"builtin": true` in the index and manifest, and
+`"action": {"type": "builtin"}` in the manifest. The `id` identifies a
+backend already shipped with Spotty. Store installs enable that backend;
+file imports use the same configuration path. They do not run commands or
+add duplicate custom trigger files. Unknown backend ids are unavailable.
+Words and shortcuts in these manifests document the defaults; reinstalling
+preserves the user's existing values. Empty words are valid for native
+result types.
 
 ### `web` — open a URL with the query
 

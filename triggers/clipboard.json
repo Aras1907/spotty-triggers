@@ -1,0 +1,15 @@
+{
+  "id": "clipboard",
+  "name": "Clipboard",
+  "word": "clip",
+  "description": "Search clipboard history",
+  "icon": "edit-paste-symbolic",
+  "version": "1.0.0",
+  "author": "spotty",
+  "shortcut": "Super+Ctrl+V",
+  "builtin": true,
+  "help": "Type clip to browse clipboard history, or clip followed by a query to filter it. Select an entry to paste it.",
+  "action": {
+    "type": "builtin"
+  }
+}

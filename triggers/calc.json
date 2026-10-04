@@ -1,0 +1,15 @@
+{
+  "id": "calc",
+  "name": "Calculator",
+  "word": "",
+  "description": "Calculate arithmetic",
+  "icon": "accessories-calculator-symbolic",
+  "version": "1.0.0",
+  "author": "spotty",
+  "shortcut": "",
+  "builtin": true,
+  "help": "Type an arithmetic expression in regular search to calculate it. Assign a trigger word or shortcut in Settings for calculator mode.",
+  "action": {
+    "type": "builtin"
+  }
+}

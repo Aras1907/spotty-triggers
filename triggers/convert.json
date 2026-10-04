@@ -1,0 +1,15 @@
+{
+  "id": "convert",
+  "name": "Conversions",
+  "word": "",
+  "description": "Convert units, currency and number bases",
+  "icon": "network-transmit-receive-symbolic",
+  "version": "1.0.0",
+  "author": "spotty",
+  "shortcut": "",
+  "builtin": true,
+  "help": "Type a conversion such as 10 km to mi in regular search. Assign a trigger word or shortcut in Settings for conversion mode.",
+  "action": {
+    "type": "builtin"
+  }
+}

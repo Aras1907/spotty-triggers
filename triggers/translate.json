@@ -2,14 +2,14 @@
   "id": "translate",
   "name": "Translate",
   "word": "translate",
-  "description": "Translate text to English via DeepL",
+  "description": "Translate text locally — detects the language, targets your system language",
   "icon": "tools-check-spelling-symbolic",
   "shortcut": "",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "spotty",
-  "help": "Trigger: translate\n\nType \"translate <text>\" to translate it into English.",
+  "help": "Trigger: translate\n\nType \"translate <text>\" to translate it: the source language is detected and the text is translated into your system language. Stop typing for 3 seconds (or press Enter on the \"Translating…\" row) and the result appears right here — press Enter on the translation to copy it.\n\nPick another target from the expanded list, or type a language after your text (\"hello po\" → Portuguese). \"Back to Auto\" returns to the system language.\n\nRuns 100% locally through a LibreTranslate instance (default http://localhost:5000) — your text never leaves this machine. Start it once with: pip install libretranslate && libretranslate",
   "action": {
     "type": "web",
-    "url": "https://www.deepl.com/translator#auto/en/{query}"
+    "url": "http://localhost:5000/"
   }
 }

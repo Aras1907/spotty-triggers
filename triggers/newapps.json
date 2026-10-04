@@ -1,0 +1,15 @@
+{
+  "id": "newapps",
+  "name": "New Apps",
+  "word": "",
+  "description": "Search apps you can install",
+  "icon": "spotty-store-symbolic",
+  "version": "1.0.0",
+  "author": "spotty",
+  "shortcut": "",
+  "builtin": true,
+  "help": "Find available applications in regular search. Assign a trigger word or shortcut in Settings to search only available applications.",
+  "action": {
+    "type": "builtin"
+  }
+}

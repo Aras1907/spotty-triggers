@@ -1,0 +1,15 @@
+{
+  "id": "apps",
+  "name": "Apps",
+  "word": "",
+  "description": "Search installed applications",
+  "icon": "view-app-grid-symbolic",
+  "version": "1.0.0",
+  "author": "spotty",
+  "shortcut": "",
+  "builtin": true,
+  "help": "Installed application results appear in regular search. Assign a trigger word or shortcut in Settings to search only applications.",
+  "action": {
+    "type": "builtin"
+  }
+}
