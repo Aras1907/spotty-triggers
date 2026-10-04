@@ -10,6 +10,7 @@
   "builtin": true,
   "help": "Type cmd followed by a command to run it. Commands run only when you activate the result.",
   "action": {
-    "type": "builtin"
-  }
+    "type": "native"
+  },
+  "native": true
 }

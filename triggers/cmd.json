@@ -10,6 +10,7 @@
   "builtin": true,
   "help": "Type app to browse installed and available applications and manage them. This core backend stays installed.",
   "action": {
-    "type": "builtin"
-  }
+    "type": "native"
+  },
+  "native": true
 }

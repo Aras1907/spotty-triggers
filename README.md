@@ -34,21 +34,21 @@ so a bad file can't break the app.
 | [`triggers/run.json`](triggers/run.json) | `cmd` | Run a command |
 | [`triggers/emoji.json`](triggers/emoji.json) | `emoji` | Search emoji |
 | [`triggers/bluetooth.json`](triggers/bluetooth.json) | `bt` | Bluetooth devices |
-| [`triggers/apps.json`](triggers/apps.json) | Regular search | Search installed applications |
-| [`triggers/newapps.json`](triggers/newapps.json) | Regular search | Search apps you can install |
-| [`triggers/web.json`](triggers/web.json) | Regular search | Search the web |
-| [`triggers/calc.json`](triggers/calc.json) | Regular search | Calculate arithmetic |
-| [`triggers/convert.json`](triggers/convert.json) | Regular search | Convert units, currency and number bases |
-| [`triggers/updates.json`](triggers/updates.json) | Regular search | Check and install updates |
+| [`triggers/apps.json`](triggers/apps.json) | Install from Store | Search installed applications |
+| [`triggers/newapps.json`](triggers/newapps.json) | Install from Store | Search apps you can install |
+| [`triggers/web.json`](triggers/web.json) | Install from Store | Search the web |
+| [`triggers/calc.json`](triggers/calc.json) | Install from Store | Calculate arithmetic |
+| [`triggers/convert.json`](triggers/convert.json) | Install from Store | Convert units, currency and number bases |
+| [`triggers/updates.json`](triggers/updates.json) | Install from Store | Check and install updates |
 | [`triggers/dictionary.json`](triggers/dictionary.json) | `dict` | Look up a word definition |
 | [`triggers/translate.json`](triggers/translate.json) | `translate` | Translate text locally — detects the language, targets your system language |
 
-The six result types have no trigger word by default. Set a word or shortcut
-in Spotty Settings to open their dedicated modes. Native entries require the
-Spotty version that supports the repository catalog. Older versions can still
-install Dictionary and Translate.
+The six native result providers start uninstalled. Install one from the Store
+to add it to regular search. Then set an optional word or shortcut in Spotty
+Settings to open its dedicated mode. Native entries require the Spotty version
+that supports the repository catalog.
 
-Native entries enable backends compiled into Spotty from this repository.
+Native result providers are available for users to install from the Store.
 The Rust implementations live in [`src/search/`](src/search/) and the
 catalog-based defaults in [`src/defaults.rs`](src/defaults.rs). Feature services
 (clipboard, file operations, previews, OCR, updates, and operation tracking)
@@ -101,11 +101,13 @@ new implementations require a Cargo rebuild of Spotty.
 
 A manifest is a JSON file with the following action types:
 
-### `builtin` — enable a native backend
+### `native` — install a result provider
 
-Native entries have `"builtin": true` in the index and manifest, and
-`"action": {"type": "builtin"}` in the manifest. The `id` identifies a
-backend already shipped with Spotty. Store installs enable that backend;
+Native entries have `"native": true` in the index and manifest, and
+`"action": {"type": "native"}` in the manifest. `"builtin": true` means a
+trigger word is enabled by default; native result providers use `"builtin":
+false` and start uninstalled. The `id` identifies a backend already shipped
+with Spotty. Store installs enable that provider;
 file imports use the same configuration path. They do not run commands or
 add duplicate custom trigger files. Unknown backend ids are unavailable.
 Words and shortcuts in these manifests document the defaults; reinstalling

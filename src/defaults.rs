@@ -10,12 +10,12 @@ static CATALOG: LazyLock<Vec<RepoTrigger>> = LazyLock::new(|| {
         .expect("the pinned spotty-triggers catalog must be valid JSON")
 });
 
-pub fn supports_builtin(id: &str) -> bool {
-    CATALOG.iter().any(|entry| entry.builtin && entry.id == id)
+pub fn supports_native(id: &str) -> bool {
+    CATALOG.iter().any(|entry| entry.native && entry.id == id)
 }
 
-pub fn command_keywords() -> Vec<CommandKeyword> {
-    CATALOG.iter().filter(|entry| entry.builtin).map(|entry| CommandKeyword {
+fn keyword(entry: &RepoTrigger) -> CommandKeyword {
+    CommandKeyword {
         id: entry.id.clone(),
         word: entry.word.clone(),
         description: gettext(&entry.description),
@@ -24,7 +24,15 @@ pub fn command_keywords() -> Vec<CommandKeyword> {
         all_files: entry.id == "files",
         shortcut: entry.shortcut.clone(),
         enabled: true,
-    }).collect()
+    }
+}
+
+pub fn command_keyword(id: &str) -> Option<CommandKeyword> {
+    CATALOG.iter().find(|entry| entry.native && entry.id == id).map(keyword)
+}
+
+pub fn command_keywords() -> Vec<CommandKeyword> {
+    CATALOG.iter().filter(|entry| entry.builtin).map(keyword).collect()
 }
 
 /// Spotty's own software-store glyph (a bag with a download arrow), shipped in

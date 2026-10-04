@@ -540,7 +540,7 @@ pub fn universal_results(
         };
         put(id.as_deref().unwrap_or("apps"), vec![row]);
     }
-    if config.in_regular_search("updates") {
+    if config.result_enabled("updates") && config.in_regular_search("updates") {
         if let Some(rows) = cmd::update_verb_rows(query, config) {
             update_verb_rows.extend(
                 rows.iter()
@@ -552,13 +552,13 @@ pub fn universal_results(
     // System actions and Settings panels are things to launch, like apps.
     put("apps", system::search(query, config));
     put("apps", settings_panels::search(query));
-    if config.enable_calculator && config.in_regular_search("calc") {
+    if config.result_enabled("calc") && config.in_regular_search("calc") {
         put("calc", calculator::evaluate(query, config).into_iter().collect());
     }
-    if config.converter_enabled() && config.in_regular_search("convert") {
+    if config.result_enabled("convert") && config.in_regular_search("convert") {
         put("convert", convert::convert(query, config).into_iter().collect());
     }
-    if config.enable_apps && config.in_regular_search("apps") {
+    if config.result_enabled("apps") && config.in_regular_search("apps") {
         let snap_guard = snap_lock.read().unwrap();
         put("apps", apps::search(query, &snap_guard.apps));
         // Portable AppImages: launch rows for files that have no desktop
@@ -567,10 +567,10 @@ pub fn universal_results(
             put("apps", appimage::search(query, 3));
         }
     }
-    if config.enable_new_apps && config.in_regular_search("newapps") && query.chars().count() >= 3 {
+    if config.result_enabled("newapps") && config.in_regular_search("newapps") && query.chars().count() >= 3 {
         put("newapps", cmd::universal_install(query, config.app_sources(), 4));
     }
-    if config.enable_web && config.in_regular_search("web") {
+    if config.result_enabled("web") && config.in_regular_search("web") {
         put("web", vec![web::result(query, config)]);
     }
     let mut last: Vec<SearchResult> = Vec::new();
@@ -833,7 +833,7 @@ pub fn search_mode(
                 }]
             }
             crate::triggers::TriggerAction::Files { .. }
-            | crate::triggers::TriggerAction::Builtin => vec![],
+            | crate::triggers::TriggerAction::Native => vec![],
         };
     }
     vec![]
@@ -845,7 +845,9 @@ mod tests {
 
     #[test]
     fn a_result_type_mode_searches_only_its_results() {
-        let cfg = Config::default();
+        let mut cfg = Config::default();
+        cfg.install_builtin("calc");
+        cfg.install_builtin("web");
         let snap = Arc::new(RwLock::new(crate::index::Snapshot::default()));
         // No word yet: the mode is reached by id, as its shortcut does.
         let calc = search_mode("calc", "2+3", &cfg, &snap);

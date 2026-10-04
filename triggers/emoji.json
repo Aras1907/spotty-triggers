@@ -10,6 +10,7 @@
   "builtin": true,
   "help": "Type emoji followed by a name to find an emoji. Select a result to insert it.",
   "action": {
-    "type": "builtin"
-  }
+    "type": "native"
+  },
+  "native": true
 }

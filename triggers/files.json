@@ -10,6 +10,7 @@
   "builtin": true,
   "help": "Search file names and contents. Type find followed by your query; an empty query browses files.",
   "action": {
-    "type": "builtin"
-  }
+    "type": "native"
+  },
+  "native": true
 }

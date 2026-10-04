@@ -10,6 +10,7 @@
   "builtin": true,
   "help": "Type bt to browse Bluetooth devices, scan, pair, connect, disconnect, and control Bluetooth power.",
   "action": {
-    "type": "builtin"
-  }
+    "type": "native"
+  },
+  "native": true
 }

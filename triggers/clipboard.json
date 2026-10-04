@@ -10,6 +10,7 @@
   "builtin": true,
   "help": "Type clip to browse clipboard history, or clip followed by a query to filter it. Select an entry to paste it.",
   "action": {
-    "type": "builtin"
-  }
+    "type": "native"
+  },
+  "native": true
 }

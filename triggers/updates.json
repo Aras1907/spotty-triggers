@@ -7,9 +7,10 @@
   "version": "1.0.0",
   "author": "spotty",
   "shortcut": "",
-  "builtin": true,
+  "builtin": false,
   "help": "Search for updates to check and install available updates. Assign a trigger word or shortcut in Settings for update mode. Distro update support depends on the available system services.",
   "action": {
-    "type": "builtin"
-  }
+    "type": "native"
+  },
+  "native": true
 }
