@@ -194,8 +194,8 @@ pub fn thumbnail_for(path: &Path) -> Option<PathBuf> {
     };
 
     if let Some(ref buf) = png {
-        let _ = std::fs::create_dir_all(cache_path.parent().unwrap());
-        let _ = std::fs::write(&cache_path, buf);
+        let _ = crate::security::private_dir(cache_path.parent().unwrap());
+        let _ = crate::security::write_private(&cache_path, buf);
         Some(cache_path)
     } else {
         None
@@ -247,8 +247,8 @@ fn downscale_slide_icon(full_png: &Path, out: &Path) -> Option<PathBuf> {
     image::DynamicImage::ImageRgba8(scaled)
         .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
         .ok()?;
-    let _ = std::fs::create_dir_all(out.parent()?);
-    std::fs::write(out, &buf).ok()?;
+    let _ = crate::security::private_dir(out.parent()?);
+    crate::security::write_private(out, &buf).ok()?;
     Some(out.to_path_buf())
 }
 
@@ -286,8 +286,8 @@ fn downscale_image_icon(src: &Path, out: &Path) -> Option<PathBuf> {
     image::DynamicImage::ImageRgba8(scaled)
         .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
         .ok()?;
-    let _ = std::fs::create_dir_all(out.parent()?);
-    std::fs::write(out, &buf).ok()?;
+    let _ = crate::security::private_dir(out.parent()?);
+    crate::security::write_private(out, &buf).ok()?;
     Some(out.to_path_buf())
 }
 

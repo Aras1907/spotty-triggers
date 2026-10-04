@@ -7,7 +7,6 @@
   "version": "1.0.0",
   "author": "spotty",
   "shortcut": "Super+Ctrl+E",
-  "builtin": true,
   "help": "Type emoji followed by a name to find an emoji. Select a result to insert it.",
   "action": {
     "type": "native"

@@ -7,7 +7,6 @@
   "version": "1.0.0",
   "author": "spotty",
   "shortcut": "",
-  "builtin": false,
   "help": "Installed application results appear in regular search. Assign a trigger word or shortcut in Settings to search only applications.",
   "action": {
     "type": "native"

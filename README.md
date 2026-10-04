@@ -21,8 +21,11 @@ manifest file and import it locally (see
 
 Shell triggers additionally show a confirmation dialog with the exact
 command before installing; web and file triggers install directly (they
-cannot run code). A malformed manifest is rejected with an error,
-so a bad file can't break the app.
+open HTTP(S) links or filter files). Manifests are validated on installation
+and reload. Shell templates remain arbitrary code with your user permissions.
+See [PRIVACY_AND_SECURITY.md](PRIVACY_AND_SECURITY.md) for network behavior,
+storage protections and remaining risks, and [SECURITY.md](SECURITY.md) to report
+a vulnerability.
 
 ## Available triggers and results
 
@@ -60,9 +63,9 @@ Management is a core backend and cannot be removed.
 ## Repository layout
 
 ```
-index.json           ← browse listing: id, name, word, description, icon,
-                        version, author, shortcut, builtin — everything Spotty shows
-                        in Settings → Trigger → Store
+index.json           ← searchable Store listing: id, name, word, description,
+                        icon, version, author, shortcut and install defaults.
+                        Every entry appears in the same Store list.
 triggers/<id>.json   ← one manifest per trigger — the full install payload
                         (adds help/help_image and the action)
 ```
@@ -104,9 +107,11 @@ A manifest is a JSON file with the following action types:
 ### `native` — install a result provider
 
 Native entries have `"native": true` in the index and manifest, and
-`"action": {"type": "native"}` in the manifest. `"builtin": true` means a
-trigger word is enabled by default; native result providers use `"builtin":
-false` and start uninstalled. The `id` identifies a backend already shipped
+`"action": {"type": "native"}` in the manifest. `"preinstalled": true` means
+a trigger word is enabled by default. Optional result providers use
+`"preinstalled": false` and start uninstalled. This field controls fresh
+installation defaults only; the Store shows every entry in the same searchable
+list without a Built-in section. The `id` identifies a backend already shipped
 with Spotty. Store installs enable that provider;
 file imports use the same configuration path. They do not run commands or
 add duplicate custom trigger files. Unknown backend ids are unavailable.

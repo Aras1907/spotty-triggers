@@ -7,7 +7,7 @@
   "shortcut": "",
   "version": "1.1.0",
   "author": "spotty",
-  "help": "Trigger: translate\n\nType \"translate <text>\" to translate it: the source language is detected and the text is translated into your system language. Stop typing for 3 seconds (or press Enter on the \"Translating…\" row) and the result appears right here — press Enter on the translation to copy it.\n\nPick another target from the expanded list, or type a language after your text (\"hello po\" → Portuguese). \"Back to Auto\" returns to the system language.\n\nRuns 100% locally through a LibreTranslate instance (default http://localhost:5000) — your text never leaves this machine. Start it once with: pip install libretranslate && libretranslate",
+  "help": "Trigger: translate\n\nType \"translate <text>\" to translate it: the source language is detected and the text is translated into your system language. Stop typing for 3 seconds (or press Enter on the \"Translating…\" row) and the result appears right here — press Enter on the translation to copy it.\n\nPick another target from the expanded list, or type a language after your text (\"hello po\" → Portuguese). \"Back to Auto\" returns to the system language.\n\nUses your configured LibreTranslate endpoint (default http://localhost:5000). Text stays local with the default endpoint; a remote endpoint receives your text and any API key over HTTPS. There is no automatic cloud fallback. Start it once with: pip install libretranslate && libretranslate",
   "action": {
     "type": "web",
     "url": "http://localhost:5000/"

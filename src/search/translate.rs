@@ -29,7 +29,7 @@ const FAIL_BACKOFF: Duration = Duration::from_secs(10);
 const LANGS_BACKOFF: Duration = Duration::from_secs(15);
 /// Call budget for one translation: the very first request can stall while
 /// the engine warms its models, later calls are quick.
-const TRANSLATE_TIMEOUT: &str = "30";
+const TRANSLATE_TIMEOUT: u64 = 30;
 /// The command offered when the engine isn't running.
 const SETUP_CMD: &str = "pip install libretranslate";
 
@@ -357,13 +357,8 @@ fn post_translate(
     }
     let body = serde_json::Value::Object(obj).to_string();
     let url = format!("{endpoint}/translate");
-    let cmd = format!(
-        "curl -fsS --max-time {TRANSLATE_TIMEOUT} -X POST \
-         -H 'Content-Type: application/json' --data-binary {} {}",
-        crate::triggers::shell_escape(&body),
-        crate::triggers::shell_escape(&url),
-    );
-    let out = crate::app::run_host_shell_command(&cmd)
+    let out = crate::security::curl_request(&url, Some(body.as_bytes()), 1_048_576,
+        TRANSLATE_TIMEOUT, true)
         .map_err(|e| FetchErr { msg: e.to_string(), connect: true })?;
     if !out.status.success() {
         let code = out.status.code();

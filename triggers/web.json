@@ -7,7 +7,6 @@
   "version": "1.0.0",
   "author": "spotty",
   "shortcut": "",
-  "builtin": false,
   "help": "Search the web from regular search using your configured search engine. Assign a trigger word or shortcut in Settings for a dedicated mode.",
   "action": {
     "type": "native"

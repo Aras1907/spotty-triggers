@@ -659,7 +659,7 @@ pub fn ensure_updates_checked_age(max_age: Duration) {
 /// Startup / periodic tick: respects the feature switch and the
 /// user-configured interval (Settings → Updates).
 pub fn periodic_update_check(config: &Config) {
-    if !config.enable_updates {
+    if !config.result_enabled("updates") {
         return;
     }
     let interval =
@@ -2142,7 +2142,7 @@ pub fn update_results(query: &str, config: &Config) -> Vec<SearchResult> {
 fn search_updates(query: &str, config: &Config) -> Vec<SearchResult> {
     // Master switch off: the verb only offers to turn the feature back on
     // (the badge and the background checks are gated elsewhere).
-    if !config.enable_updates {
+    if !config.result_enabled("updates") {
         return vec![update_toggle_row(config)];
     }
     ensure_updates_checked();
@@ -4022,7 +4022,7 @@ fn update_signature(updates: &[UpdateInfo]) -> String {
 /// show — no updates, the feature or its notification is off, the user
 /// snoozed it, or this exact set was dismissed.
 pub fn update_notice(cfg: &Config) -> Option<(usize, String)> {
-    if !cfg.enable_updates || !cfg.update_notification {
+    if !cfg.result_enabled("updates") || !cfg.update_notification {
         return None;
     }
     if cfg.update_snooze_until > now_epoch() {

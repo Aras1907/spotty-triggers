@@ -32,7 +32,7 @@ pub fn command_keyword(id: &str) -> Option<CommandKeyword> {
 }
 
 pub fn command_keywords() -> Vec<CommandKeyword> {
-    CATALOG.iter().filter(|entry| entry.builtin).map(keyword).collect()
+    CATALOG.iter().filter(|entry| entry.preinstalled).map(keyword).collect()
 }
 
 /// Spotty's own software-store glyph (a bag with a download arrow), shipped in
@@ -99,4 +99,3 @@ pub fn result_blurb(id: &str) -> String {
         _ => String::new(),
     }
 }
-

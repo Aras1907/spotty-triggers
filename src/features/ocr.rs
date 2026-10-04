@@ -581,14 +581,14 @@ fn load_cache() -> HashMap<PathBuf, CacheRec> {
 fn save_cache() {
     let p = cache_path();
     if let Some(parent) = p.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        let _ = crate::security::private_dir(parent);
     }
     let out = if let Ok(g) = cache().lock() {
         serialize_cache(&g)
     } else {
         return;
     };
-    let _ = std::fs::write(&p, out);
+    let _ = crate::security::write_private(&p, out);
 }
 
 fn freshness(path: &Path) -> Option<(u64, u64)> {
@@ -975,21 +975,34 @@ fn ocr_pdf_pass(path: &Path, start_page: u32, budget: Duration) -> PdfPass {
     };
     // Unique per pass: a search-thread pass and the background worker can
     // render concurrently.
-    static N: AtomicU64 = AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "spotty-pdfocr-{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::create_dir_all(&dir);
+    let Ok(temp) = crate::security::PrivateTempDir::new("pdfocr") else {
+        return PdfPass { text: String::new(), conf: 0, next_start: start, complete: false };
+    };
+    let dir = &temp.0;
     let prefix = dir.join("page");
     let last = start.saturating_add(PDF_OCR_MAX_PAGES_PER_PASS - 1);
     let deadline = Instant::now() + budget;
-    let _ = std::process::Command::new(&bin)
+    let rendered_child = std::process::Command::new(&bin)
         .args(["-png", "-r", "200", "-f", &start.to_string(), "-l", &last.to_string()])
         .arg(path)
         .arg(&prefix)
-        .status();
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    let mut render_timed_out = false;
+    if let Ok(mut child) = rendered_child {
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+                _ => {
+                    render_timed_out = true;
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break;
+                }
+            }
+        }
+    }
 
     // pdftoppm zero-pads page numbers to the document's digit width
     // (page-01.png …), so discover the files instead of guessing names.
@@ -1011,7 +1024,7 @@ fn ocr_pdf_pass(path: &Path, start_page: u32, budget: Duration) -> PdfPass {
     let mut texts = Vec::new();
     let mut min_conf = 100i32;
     let mut processed = 0u32;
-    let mut exhausted = false;
+    let mut exhausted = render_timed_out;
     for (_, page) in &rendered {
         if Instant::now() >= deadline {
             exhausted = true;

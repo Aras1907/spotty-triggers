@@ -139,7 +139,7 @@ impl ClipboardHistory {
 
     fn save_to(&self, path: &std::path::Path) {
         if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+            let _ = crate::security::private_dir(dir);
         }
         // v2 envelope: { version, entries, times }
         let envelope = serde_json::json!({
@@ -151,20 +151,8 @@ impl ClipboardHistory {
             log::warn!("clipboard: could not serialize history");
             return;
         };
-        // Atomic write: temp file + rename so a crash mid-write can never
-        // corrupt the existing history.
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, &data).is_err() {
-            log::warn!("clipboard: could not write history file");
-            return;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-        }
-        if std::fs::rename(&tmp, path).is_err() {
-            log::warn!("clipboard: could not replace history file");
+        if let Err(e) = crate::security::write_private(path, &data) {
+            log::warn!("clipboard: could not persist history: {e}");
         }
     }
 
@@ -214,6 +202,7 @@ impl ClipboardHistory {
     }
 
     pub fn push_text(&mut self, t: String) {
+        if !crate::security::clipboard_capture_enabled() { return; }
         if self.suppressed_text.iter().any(|s| s == &t) {
             return;
         }
@@ -239,6 +228,7 @@ impl ClipboardHistory {
     }
 
     pub fn push_image(&mut self, path: PathBuf) {
+        if !crate::security::clipboard_capture_enabled() { return; }
         if self.suppressed_images.iter().any(|p| p == &path) {
             return;
         }
@@ -259,6 +249,7 @@ impl ClipboardHistory {
 
     /// Record a copied file/folder so it shows in the clipboard manager.
     pub fn push_file(&mut self, path: PathBuf) {
+        if !crate::security::clipboard_capture_enabled() { return; }
         if self.suppressed_files.iter().any(|p| p == &path) {
             return;
         }
@@ -423,6 +414,7 @@ fn read_current_clipboard(
     last_img_hash: &Rc<RefCell<Option<u64>>>,
     last_file_hash: &Rc<RefCell<Option<u64>>>,
 ) {
+    if !crate::security::clipboard_capture_enabled() { return; }
     log::debug!("clipboard: read_current_clipboard called");
     let formats = cb.formats();
 
@@ -630,7 +622,7 @@ fn finish_file_uri_read(text: String, last_fh: &Rc<RefCell<Option<u64>>>) {
     *prev = Some(content_hash);
 
     for path in parse_uri_list(&text) {
-        log::info!("clipboard: adding file to history: {:?}", path);
+        log::debug!("clipboard: adding file to history");
         crate::app::with_state(|st| st.clipboard.borrow_mut().push_file(path));
         crate::app::refresh_search_window();
     }
@@ -687,9 +679,9 @@ fn quick_hash(data: &[u8]) -> u64 {
 /// Save raw PNG bytes to a uniquely-named cache file.
 fn save_png_bytes(bytes: &[u8]) -> Option<PathBuf> {
     let dir = cache_dir();
-    let _ = std::fs::create_dir_all(&dir);
+    crate::security::private_dir(&dir).ok()?;
     let path = dir.join(format!("clip-{:016x}.png", quick_hash(bytes)));
-    if path.exists() || std::fs::write(&path, bytes).is_ok() {
+    if path.is_file() || crate::security::write_private(&path, bytes).is_ok() {
         Some(path)
     } else {
         None

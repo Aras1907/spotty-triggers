@@ -1620,7 +1620,7 @@ fn render_pdf_page(pdf: &Path, page: usize) -> Option<PathBuf> {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("spotty/pdf")
         .join(format!("{}-{}", hash, mtime));
-    let _ = std::fs::create_dir_all(&cache_root);
+    let _ = crate::security::private_dir(&cache_root);
     let prefix = cache_root.join(format!("page-{}", page));
     let prefix_str = prefix.to_string_lossy().to_string();
     let status = std::process::Command::new(&bin)
@@ -1727,9 +1727,9 @@ fn render_pptx_slide(doc: &Path, slide: usize) -> Option<PathBuf> {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(format!("spotty/pptx/v{}", PPTX_RENDER_VERSION))
         .join(format!("{}-{}", hash, mtime));
-    let _ = std::fs::create_dir_all(&cache_root);
+    let _ = crate::security::private_dir(&cache_root);
     let slide_path = cache_root.join(format!("slide-{}.png", slide));
-    if std::fs::write(&slide_path, &png).is_ok() {
+    if crate::security::write_private(&slide_path, &png).is_ok() {
         log::info!(
             "pptx: rendered slide {} of {} (render v{}) -> {}",
             slide,
@@ -1801,7 +1801,7 @@ fn render_office_page_to_cache(doc: &Path, n: usize) -> Option<PathBuf> {
     let n = clamp_page(n, prep.pages.len());
     let png = render_office_page(&prep, n)?;
     let out = office_page_cache_path(doc, n);
-    if std::fs::write(&out, &png).is_ok() {
+    if crate::security::write_private(&out, &png).is_ok() {
         log::debug!(
             "office: rendered page {} of {} for {}",
             n,
@@ -1865,7 +1865,9 @@ struct TextPreview {
 fn text_preview_for(path: &Path) -> Option<TextPreview> {
     let meta = std::fs::metadata(path).ok()?;
     let total_size = meta.len();
-    let bytes = std::fs::read(path).ok()?;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).ok()?.take(TEXT_PREVIEW_READ_BYTES as u64 + 1)
+        .read_to_end(&mut bytes).ok()?;
     let read_len = bytes.len().min(TEXT_PREVIEW_READ_BYTES);
 
     // Binary detection: scan first 8 KB for NUL bytes.
@@ -1932,39 +1934,28 @@ fn tar_listing(reader: &mut dyn Read) -> Option<(Vec<String>, usize)> {
     let mut entries = Vec::new();
     let mut count = 0usize;
     let mut header = [0u8; 512];
-    loop {
-        match reader.read_exact(&mut header) {
-            Ok(()) => {}
-            Err(_) => break, // EOF or truncated
-        }
-        if header.iter().all(|&b| b == 0) {
-            break; // End-of-archive
-        }
-        // Typeflag at byte 156: '0' or \0 = regular file.
+    // Cap decompressed scanning as well as allocations. A tar.gz bomb must
+    // not monopolize a worker while listing the first few files.
+    let mut reader = reader.take(64 * 1024 * 1024);
+    for _ in 0..4096 {
+        if reader.read_exact(&mut header).is_err() || header.iter().all(|&b| b == 0) { break; }
+        let size_str = std::str::from_utf8(&header[124..136]).ok()?
+            .trim_matches(|c: char| c == '\0' || c.is_ascii_whitespace());
+        let size = u64::from_str_radix(size_str, 8).ok()?;
         let typeflag = header[156];
         if typeflag == b'0' || typeflag == 0 {
-            // Size in octal at bytes 124..136.
-            let size_str = std::str::from_utf8(&header[124..136]).unwrap_or("0").trim();
-            let size = u64::from_str_radix(size_str, 8).unwrap_or(0);
-            // Name: bytes 0..100 (may be prefixed with path if longname at 345).
-            let name = std::str::from_utf8(&header[0..100])
-                .unwrap_or("")
-                .trim_end_matches('\0')
-                .to_string();
+            let name = std::str::from_utf8(&header[0..100]).unwrap_or("")
+                .trim_end_matches('\0');
             count += 1;
             if entries.len() < ARCHIVE_MAX_ENTRIES {
                 entries.push(format!("{}  {}", name, crate::imageinfo::human_size(size)));
             }
         }
-        // Skip to next 512-byte block boundary.
-        let data_blocks = (size_of::<[u8; 512]>() + 511) / 512; // 1 block per header
-        let data_size = {
-            let size_str = std::str::from_utf8(&header[124..136]).unwrap_or("0").trim();
-            u64::from_str_radix(size_str, 8).unwrap_or(0)
-        };
-        let skip = data_size + 511 - (data_size + 511) % 512; // round up to 512
-        let mut buf = vec![0u8; skip as usize];
-        let _ = reader.read_exact(&mut buf);
+        let skip = size.checked_add(511)? / 512 * 512;
+        // Stream into a fixed-size internal buffer, never allocate based on
+        // the untrusted size declared by a tar header.
+        let copied = std::io::copy(&mut reader.by_ref().take(skip), &mut std::io::sink()).ok()?;
+        if copied != skip { break; }
     }
     Some((entries, count))
 }
@@ -2122,7 +2113,7 @@ fn avif_to_png_file(path: &Path) -> Option<PathBuf> {
         return Some(out);
     }
     let parent = out.parent()?;
-    let _ = std::fs::create_dir_all(parent);
+    let _ = crate::security::private_dir(parent);
 
     let bytes = std::fs::read(path).ok()?;
     let rgba = decode_heif_to_rgba(&bytes).ok()?;
@@ -2189,7 +2180,7 @@ fn fd_cache_root() -> PathBuf {
 /// The "large" (256px) thumbnail directory, created if needed.
 fn thumb_cache_dir() -> PathBuf {
     let dir = fd_cache_root().join("large");
-    let _ = std::fs::create_dir_all(&dir);
+    let _ = crate::security::private_dir(&dir);
     dir
 }
 
@@ -2229,7 +2220,7 @@ fn render_cache_path(path: &Path) -> PathBuf {
     let dir = dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("spotty/render-cache");
-    let _ = std::fs::create_dir_all(&dir);
+    let _ = crate::security::private_dir(&dir);
     dir.join(format!("{}.png", hash))
 }
 
@@ -2363,7 +2354,7 @@ fn render_pdf_all_pages(pdf: &Path) -> Option<(Vec<PathBuf>, usize)> {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("spotty/pdf")
         .join(format!("{}-{}", hash, mtime));
-    let _ = std::fs::create_dir_all(&cache_root);
+    let _ = crate::security::private_dir(&cache_root);
 
     // Check if pages are already cached.
     let mut cached = Vec::new();
@@ -2464,7 +2455,7 @@ pub(crate) fn office_thumbnail(doc: &Path) -> Option<PathBuf> {
             bytes.len()
         );
         let out = thumb_cache_path(doc);
-        if std::fs::write(&out, &bytes).is_ok() {
+        if crate::security::write_private(&out, &bytes).is_ok() {
             return Some(out);
         }
     }
@@ -2482,7 +2473,7 @@ pub(crate) fn office_thumbnail(doc: &Path) -> Option<PathBuf> {
     // structured parser (.doc/.wps strings card).
     if let Some(prep) = prepare_office(doc) {
         if let Some(png) = render_office_page(&prep, 1) {
-            if std::fs::write(&out, &png).is_ok() {
+            if crate::security::write_private(&out, &png).is_ok() {
                 return Some(out);
             }
         }
@@ -2496,7 +2487,7 @@ pub(crate) fn office_thumbnail(doc: &Path) -> Option<PathBuf> {
                 content.lines.len()
             );
             if let Some(png) = render_content_preview(&content) {
-                if std::fs::write(&out, &png).is_ok() {
+                if crate::security::write_private(&out, &png).is_ok() {
                     return Some(out);
                 }
             }
@@ -2516,11 +2507,11 @@ fn write_embedded_thumbnail_png(bytes: &[u8], out: &Path) -> bool {
 
     let loader = gdk_pixbuf::PixbufLoader::new();
     if loader.write(bytes).is_err() || loader.close().is_err() {
-        return std::fs::write(out, bytes).is_ok();
+        return crate::security::write_private(out, bytes).is_ok();
     }
 
     let Some(pixbuf) = loader.pixbuf() else {
-        return std::fs::write(out, bytes).is_ok();
+        return crate::security::write_private(out, bytes).is_ok();
     };
 
     let width = pixbuf.width().max(1);
@@ -2549,7 +2540,7 @@ fn write_embedded_thumbnail_png(bytes: &[u8], out: &Path) -> bool {
     sharpen_pixbuf(&image, 1.7);
     boost_pixbuf_contrast(&image, 1.2);
 
-    image.savev(out, "png", &[("compression", "6")]).is_ok() || std::fs::write(out, bytes).is_ok()
+    image.savev(out, "png", &[("compression", "6")]).is_ok() || crate::security::write_private(out, bytes).is_ok()
 }
 
 fn sharpen_pixbuf(pixbuf: &gdk_pixbuf::Pixbuf, amount: f32) {
@@ -2628,7 +2619,8 @@ fn extract_embedded_thumbnail(doc: &Path) -> Option<Vec<u8>> {
         if let Ok(mut entry) = zip.by_name(name) {
             use std::io::Read;
             let mut buf = Vec::new();
-            if entry.read_to_end(&mut buf).is_ok() && !buf.is_empty() {
+            if entry.by_ref().take(8 * 1024 * 1024 + 1).read_to_end(&mut buf).is_ok()
+                && !buf.is_empty() && buf.len() <= 8 * 1024 * 1024 {
                 return Some(buf);
             }
         }
@@ -5882,8 +5874,8 @@ fn legacy_ppt_stream(doc: &Path) -> Option<Vec<u8>> {
     };
     let mut stream = comp.open_stream(stream_name).ok()?;
     let mut bytes = Vec::new();
-    stream.read_to_end(&mut bytes).ok()?;
-    Some(bytes)
+    stream.take(32 * 1024 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() <= 32 * 1024 * 1024).then_some(bytes)
 }
 
 /// The deck's `Pictures` storage stream — concatenated image records, each
@@ -5901,8 +5893,8 @@ fn legacy_ppt_pictures_stream(doc: &Path) -> Option<Vec<u8>> {
     };
     let mut stream = comp.open_stream(stream_name).ok()?;
     let mut bytes = Vec::new();
-    stream.read_to_end(&mut bytes).ok()?;
-    Some(bytes)
+    stream.take(32 * 1024 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() <= 32 * 1024 * 1024).then_some(bytes)
 }
 
 /// The deck's `Current User` stream — the entry point (offset word at 16)
@@ -5921,8 +5913,8 @@ fn legacy_ppt_current_user(doc: &Path) -> Option<Vec<u8>> {
     };
     let mut stream = comp.open_stream(stream_name).ok()?;
     let mut bytes = Vec::new();
-    stream.read_to_end(&mut bytes).ok()?;
-    Some(bytes)
+    stream.take(32 * 1024 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() <= 32 * 1024 * 1024).then_some(bytes)
 }
 
 /// Collect every record-1006 (slide) payload in `bytes`, in stream order.
@@ -7504,8 +7496,8 @@ impl LegacyPptMedia {
         }
         let out = self.dir.join(format!("{}.bin", crate::md5::hex(&uid)));
         if !out.exists() {
-            std::fs::create_dir_all(&self.dir).ok()?;
-            std::fs::write(&out, bytes).ok()?;
+            crate::security::private_dir(&self.dir).ok()?;
+            crate::security::write_private(&out, bytes).ok()?;
         }
         Some(out)
     }
@@ -7876,7 +7868,7 @@ fn cached_legacy_ppt_slide(doc: &Path, slide: usize) -> Option<PathBuf> {
 fn render_legacy_ppt_slide_to_cache(doc: &Path, slide: usize) -> Option<PathBuf> {
     let png = render_legacy_ppt_slide(doc, slide)?;
     let out = legacy_ppt_cache_path(doc, slide);
-    if std::fs::write(&out, &png).is_ok() {
+    if crate::security::write_private(&out, &png).is_ok() {
         log::info!(
             "ppt: rendered slide {} of {} -> {}",
             slide,
@@ -10323,10 +10315,10 @@ fn extract_pptx_media_from_dir<R: std::io::Read + std::io::Seek>(
             if let Ok(mut entry) = zip.by_name(&full) {
                 let mut data = Vec::new();
                 use std::io::Read;
-                let _ = entry.read_to_end(&mut data);
-                if !data.is_empty() {
+                let read = entry.by_ref().take(16 * 1024 * 1024 + 1).read_to_end(&mut data);
+                if read.is_ok() && !data.is_empty() && data.len() <= 16 * 1024 * 1024 {
                     let out = media_cache.join(format!("{}.bin", crate::md5::hex(full.as_bytes())));
-                    if !out.exists() { let _ = std::fs::write(&out, &data); }
+                    if !out.exists() { let _ = crate::security::write_private(&out, &data); }
                     media_map.insert(rid, out);
                 }
             }
@@ -10357,7 +10349,7 @@ fn extract_part_media<R: std::io::Read + std::io::Seek>(
     part_path: &str,
 ) -> std::collections::HashMap<String, PathBuf> {
     let media_cache = media_cache_dir(doc);
-    let _ = std::fs::create_dir_all(&media_cache);
+    let _ = crate::security::private_dir(&media_cache);
     let mut map = std::collections::HashMap::new();
     extract_pptx_media_from_dir(zip, part_path, &media_cache, &mut map);
     map

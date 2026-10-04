@@ -48,6 +48,13 @@ pub fn has_pending() -> bool {
 /// Paste the pending copy/cut into `dest_dir`. Returns the new path on success.
 pub fn paste(dest_dir: &Path) -> Option<PathBuf> {
     let op = PENDING.with(|p| p.borrow().clone())?;
+    let src = match &op { PendingOp::Copy(p) | PendingOp::Cut(p) => p };
+    let meta = std::fs::symlink_metadata(src).ok()?;
+    if meta.is_dir() && std::fs::canonicalize(dest_dir).ok()?
+        .starts_with(std::fs::canonicalize(src).ok()?) {
+        // Copying/moving a directory into itself would recurse indefinitely.
+        return None;
+    }
     match op {
         PendingOp::Copy(src) => {
             let dest = unique_dest(dest_dir, &src);
@@ -87,7 +94,7 @@ fn unique_dest(dir: &Path, src: &Path) -> PathBuf {
 
 /// If `candidate` exists, append " (copy)", " (copy 2)", ... before the extension.
 fn unique_path(candidate: &Path) -> PathBuf {
-    if !candidate.exists() {
+    if std::fs::symlink_metadata(candidate).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
         return candidate.to_path_buf();
     }
     let parent = candidate.parent().unwrap_or_else(|| Path::new("."));
@@ -107,7 +114,7 @@ fn unique_path(candidate: &Path) -> PathBuf {
             None => format!("{}{}", stem, suffix),
         };
         let p = parent.join(name);
-        if !p.exists() {
+        if std::fs::symlink_metadata(&p).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
             return p;
         }
     }
@@ -115,33 +122,47 @@ fn unique_path(candidate: &Path) -> PathBuf {
 }
 
 fn copy_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
-    if src.is_dir() {
-        std::fs::create_dir_all(dest)?;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+    let meta = std::fs::symlink_metadata(src)?;
+    if meta.file_type().is_symlink() {
+        // Copy the link, not its target. This avoids leaking files outside
+        // the selected tree and loops through self-referential symlinks.
+        std::os::unix::fs::symlink(std::fs::read_link(src)?, dest)
+    } else if meta.is_dir() {
+        std::fs::DirBuilder::new().mode(0o700).create(dest)?;
         for entry in std::fs::read_dir(src)? {
             let entry = entry?;
-            let child_dest = dest.join(entry.file_name());
-            copy_recursive(&entry.path(), &child_dest)?;
+            copy_recursive(&entry.path(), &dest.join(entry.file_name()))?;
         }
-        Ok(())
+        std::fs::set_permissions(dest, meta.permissions())
+    } else if meta.is_file() {
+        let mut input = std::fs::OpenOptions::new().read(true)
+            .custom_flags(libc::O_NOFOLLOW).open(src)?;
+        let mut output = std::fs::OpenOptions::new().write(true).create_new(true)
+            .mode(meta.permissions().mode() & 0o777).open(dest)?;
+        std::io::copy(&mut input, &mut output).map(|_| ())
     } else {
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(src, dest).map(|_| ())
+        Err(std::io::Error::other("Cannot copy special files"))
     }
 }
 
 fn move_path(src: &Path, dest: &Path) -> std::io::Result<()> {
-    // Try a fast rename first; fall back to copy+delete across filesystems.
-    if std::fs::rename(src, dest).is_ok() {
-        return Ok(());
-    }
+    use std::os::unix::ffi::OsStrExt;
+    let from = std::ffi::CString::new(src.as_os_str().as_bytes())?;
+    let to = std::ffi::CString::new(dest.as_os_str().as_bytes())?;
+    // Linux atomic no-replace rename: a newly created destination, including
+    // a dangling symlink, must never be overwritten between check and move.
+    let result = unsafe { libc::renameat2(libc::AT_FDCWD, from.as_ptr(),
+        libc::AT_FDCWD, to.as_ptr(), libc::RENAME_NOREPLACE) };
+    if result == 0 { return Ok(()); }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() != Some(libc::EXDEV) { return Err(error); }
     copy_recursive(src, dest)?;
     remove_path(src)
 }
 
 fn remove_path(p: &Path) -> std::io::Result<()> {
-    if p.is_dir() {
+    if std::fs::symlink_metadata(p)?.is_dir() {
         std::fs::remove_dir_all(p)
     } else {
         std::fs::remove_file(p)

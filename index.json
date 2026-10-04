@@ -8,8 +8,8 @@
     "version": "1.0.0",
     "author": "spotty",
     "shortcut": "Super+Ctrl+F",
-    "builtin": true,
-    "native": true
+    "native": true,
+    "preinstalled": true
   },
   {
     "id": "clipboard",
@@ -20,8 +20,8 @@
     "version": "1.0.0",
     "author": "spotty",
     "shortcut": "Super+Ctrl+V",
-    "builtin": true,
-    "native": true
+    "native": true,
+    "preinstalled": true
   },
   {
     "id": "cmd",
@@ -32,8 +32,8 @@
     "version": "1.0.0",
     "author": "spotty",
     "shortcut": "Super+Ctrl+A",
-    "builtin": true,
-    "native": true
+    "native": true,
+    "preinstalled": true
   },
   {
     "id": "run",
@@ -44,8 +44,8 @@
     "version": "1.0.0",
     "author": "spotty",
     "shortcut": "Super+Ctrl+T",
-    "builtin": true,
-    "native": true
+    "native": true,
+    "preinstalled": true
   },
   {
     "id": "emoji",
@@ -56,8 +56,8 @@
     "version": "1.0.0",
     "author": "spotty",
     "shortcut": "Super+Ctrl+E",
-    "builtin": true,
-    "native": true
+    "native": true,
+    "preinstalled": true
   },
   {
     "id": "bluetooth",
@@ -68,8 +68,8 @@
     "version": "1.0.0",
     "author": "spotty",
     "shortcut": "Super+Ctrl+B",
-    "builtin": true,
-    "native": true
+    "native": true,
+    "preinstalled": true
   },
   {
     "id": "apps",
@@ -80,8 +80,8 @@
     "version": "1.0.0",
     "author": "spotty",
     "shortcut": "",
-    "builtin": false,
-    "native": true
+    "native": true,
+    "preinstalled": false
   },
   {
     "id": "newapps",
@@ -92,8 +92,8 @@
     "version": "1.0.0",
     "author": "spotty",
     "shortcut": "",
-    "builtin": false,
-    "native": true
+    "native": true,
+    "preinstalled": false
   },
   {
     "id": "web",
@@ -104,8 +104,8 @@
     "version": "1.0.0",
     "author": "spotty",
     "shortcut": "",
-    "builtin": false,
-    "native": true
+    "native": true,
+    "preinstalled": false
   },
   {
     "id": "calc",
@@ -116,8 +116,8 @@
     "version": "1.0.0",
     "author": "spotty",
     "shortcut": "",
-    "builtin": false,
-    "native": true
+    "native": true,
+    "preinstalled": false
   },
   {
     "id": "convert",
@@ -128,8 +128,8 @@
     "version": "1.0.0",
     "author": "spotty",
     "shortcut": "",
-    "builtin": false,
-    "native": true
+    "native": true,
+    "preinstalled": false
   },
   {
     "id": "updates",
@@ -140,8 +140,8 @@
     "version": "1.0.0",
     "author": "spotty",
     "shortcut": "",
-    "builtin": false,
-    "native": true
+    "native": true,
+    "preinstalled": false
   },
   {
     "id": "dictionary",

@@ -7,7 +7,6 @@
   "version": "1.0.0",
   "author": "spotty",
   "shortcut": "",
-  "builtin": false,
   "help": "Type an arithmetic expression in regular search to calculate it. Assign a trigger word or shortcut in Settings for calculator mode.",
   "action": {
     "type": "native"

@@ -7,7 +7,6 @@
   "version": "1.0.0",
   "author": "spotty",
   "shortcut": "Super+Ctrl+F",
-  "builtin": true,
   "help": "Search file names and contents. Type find followed by your query; an empty query browses files.",
   "action": {
     "type": "native"

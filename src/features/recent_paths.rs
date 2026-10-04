@@ -25,10 +25,10 @@ impl RecentPaths {
     fn save(&self) {
         let path = Self::path();
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            let _ = crate::security::private_dir(parent);
         }
         if let Ok(json) = serde_json::to_string(self) {
-            let _ = std::fs::write(path, json);
+            let _ = crate::security::write_private(path, json);
         }
     }
 

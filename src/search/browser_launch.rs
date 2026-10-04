@@ -101,11 +101,7 @@ pub fn private_window_argv(url: &str) -> Option<Vec<String>> {
     let mut argv = exec_to_argv(&exec);
     argv.extend(flags.into_iter().map(str::to_string));
     argv.push(url.to_string());
-    log::info!(
-        "private window: {} → {}",
-        desktop_id,
-        argv.join(" ")
-    );
+    log::debug!("private window: launching browser {}", desktop_id);
     Some(argv)
 }
 

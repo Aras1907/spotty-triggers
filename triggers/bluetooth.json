@@ -7,7 +7,6 @@
   "version": "1.0.0",
   "author": "spotty",
   "shortcut": "Super+Ctrl+B",
-  "builtin": true,
   "help": "Type bt to browse Bluetooth devices, scan, pair, connect, disconnect, and control Bluetooth power.",
   "action": {
     "type": "native"
