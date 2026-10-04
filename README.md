@@ -48,8 +48,9 @@ in Spotty Settings to open their dedicated modes. Native entries require the
 Spotty version that supports the repository catalog. Older versions can still
 install Dictionary and Translate.
 
-Native entries enable backends shipped with Spotty; their Rust code stays in
-the [Spotty source repository](https://github.com/Aras1907/Spotty). Installing
+Native entries enable backends compiled into Spotty from this repository.
+The Rust implementations live in [`src/search/`](src/search/) and the
+catalog-based defaults in [`src/defaults.rs`](src/defaults.rs). Installing
 or removing them preserves customized words, shortcuts, and ordering. App
 Management is a core backend and cannot be removed.
 
@@ -68,6 +69,27 @@ Spotty's trigger repository URL defaults to
 static host serving this layout works — raw GitHub or your own mirror
 (set `trigger_repo_url` in `~/.config/spotty/config.json`; there is no UI
 field for it).
+
+## Native trigger source
+
+This repository is the source of truth for all native search triggers and
+result providers. Spotty includes it as the pinned `trigger-backends` Git
+submodule. `src/search/` supplies search dispatch, result types, and the
+providers; `src/defaults.rs` loads native defaults from `index.json`.
+These modules compile inside the Spotty crate and use its UI, indexer,
+configuration, and host services through `crate::` paths.
+
+Build through a Spotty checkout with host Cargo:
+
+```sh
+git submodule update --init --recursive
+cargo build
+```
+
+To change a native backend, edit its source in the submodule and commit
+and push here first. Then commit and push the updated submodule revision
+in Spotty. An ordinary Store manifest cannot introduce a new Rust backend:
+new implementations require a Cargo rebuild of Spotty.
 
 ## Authoring a trigger
 
