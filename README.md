@@ -50,7 +50,10 @@ install Dictionary and Translate.
 
 Native entries enable backends compiled into Spotty from this repository.
 The Rust implementations live in [`src/search/`](src/search/) and the
-catalog-based defaults in [`src/defaults.rs`](src/defaults.rs). Installing
+catalog-based defaults in [`src/defaults.rs`](src/defaults.rs). Feature services
+(clipboard, file operations, previews, OCR, updates, and operation tracking)
+live in [`src/features/`](src/features/), and feature settings dialogs in
+[`src/ui/feature_settings.rs`](src/ui/feature_settings.rs). Installing
 or removing them preserves customized words, shortcuts, and ordering. App
 Management is a core backend and cannot be removed.
 
@@ -76,8 +79,11 @@ This repository is the source of truth for all native search triggers and
 result providers. Spotty includes it as the pinned `trigger-backends` Git
 submodule. `src/search/` supplies search dispatch, result types, and the
 providers; `src/defaults.rs` loads native defaults from `index.json`.
-These modules compile inside the Spotty crate and use its UI, indexer,
-configuration, and host services through `crate::` paths.
+`src/features/` owns native feature services and `src/ui/feature_settings.rs`
+owns their settings dialogs. These modules compile inside the Spotty crate
+and use its shared UI, indexer, configuration, and platform integration
+through `crate::` paths. The settings module is a child of Spotty's settings
+window module so it can use the shared widget and persistence helpers.
 
 Build through a Spotty checkout with host Cargo:
 
