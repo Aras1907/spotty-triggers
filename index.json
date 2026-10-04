@@ -133,9 +133,9 @@
   },
   {
     "id": "updates",
-    "name": "Updates",
-    "word": "",
-    "description": "Check and install updates",
+    "name": "System Updates",
+    "word": "update",
+    "description": "Search and install system, Flatpak, Snap and AppImage updates with the update trigger",
     "icon": "software-update-available-symbolic",
     "version": "1.0.0",
     "author": "spotty",
