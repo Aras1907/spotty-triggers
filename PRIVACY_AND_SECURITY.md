@@ -13,6 +13,11 @@ available at `../PRIVACY_AND_SECURITY.md`.
   show the exact command and require approval. Use `{query}` unquoted as a shell
   word; Spotty supplies quoting. Do not re-interpret query data through `eval`
   or another interpreter. Quoting cannot secure an untrusted template.
+- The optional [Proton login companion](proton-bridge-gui/README.md) sends
+  sign-in details only to the local Bridge API over authenticated, verified
+  TLS. It does not persist form credentials. Bridge owns the saved account,
+  encrypted vault, keyring, and network connection to Proton. The companion
+  uses Bridge's internal 3.x API; live account login remains unverified.
 - Web manifests support HTTP(S) links. Activating one sends the query to its
   website. Translation uses the configured LibreTranslate endpoint, which is
   local by default but can be remote. Dictionary/currency backends can also

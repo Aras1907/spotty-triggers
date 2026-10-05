@@ -1,0 +1,67 @@
+// Minimal wire-compatible interface for Proton Bridge 3.x, not a copy of its
+// implementation. Field numbers and RPC paths follow the upstream protocol:
+// https://github.com/ProtonMail/proton-bridge/blob/master/internal/frontend/grpc/bridge.proto
+syntax = "proto3";
+package grpc;
+
+service Bridge {
+  rpc Quit(Empty) returns (Empty);
+  rpc GuiReady(Empty) returns (Empty);
+  rpc GetUserList(Empty) returns (UserList);
+  rpc Login(LoginRequest) returns (Empty);
+  rpc Login2FA(LoginRequest) returns (Empty);
+  rpc Login2Passwords(LoginRequest) returns (Empty);
+  rpc LoginFido(LoginRequest) returns (Empty);
+  rpc LoginAbort(Username) returns (Empty);
+  rpc FidoAssertionAbort(Username) returns (Empty);
+  rpc IsAutostartOn(Empty) returns (Boolean);
+  rpc SetIsAutostartOn(Boolean) returns (Empty);
+  rpc RunEventStream(StreamRequest) returns (stream StreamEvent);
+  rpc StopEventStream(Empty) returns (Empty);
+}
+message Empty {}
+message Boolean { bool value = 1; }
+message Username { string username = 1; }
+message LoginRequest {
+  string username = 1;
+  bytes password = 2; // Bridge expects base64-encoded bytes inside protobuf.
+  optional bool useHvDetails = 3;
+}
+message StreamRequest { string clientPlatform = 1; }
+message StreamEvent {
+  oneof event {
+    LoginEvent login = 2;
+    KeychainEvent keychain = 6;
+  }
+}
+message KeychainEvent {
+  oneof event { Empty hasNoKeychain = 2; }
+}
+message LoginEvent {
+  oneof event {
+    LoginError error = 1;
+    Username tfaRequested = 2;
+    Username twoPasswordRequested = 3;
+    Finished finished = 4;
+    Finished alreadyLoggedIn = 5;
+    HumanVerification hvRequested = 6;
+    Username fidoRequested = 7;
+    Username tfaOrFidoRequested = 8;
+    Username loginFidoTouchRequested = 9;
+    Username loginFidoTouchCompleted = 10;
+    Username loginFidoPinRequired = 11;
+  }
+}
+message LoginError {
+  int32 type = 1;
+  string message = 2;
+}
+message Finished { string userID = 1; }
+message HumanVerification { string hvUrl = 1; }
+message UserList { repeated User users = 1; }
+message User {
+  string id = 1;
+  string username = 2;
+  int32 state = 4; // 0: signed out; 1: locked; 2: connected.
+  // Deliberately do not decode the Bridge-generated password (field 8).
+}

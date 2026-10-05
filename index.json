@@ -169,7 +169,7 @@
     "word": "proton",
     "description": "Sign in to Proton Mail Bridge and keep your mail connected in the background",
     "icon": "mail-send-receive-symbolic",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "author": "spotty",
     "shortcut": "",
     "native": false,

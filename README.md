@@ -78,18 +78,36 @@ Flatpak.
 
 | Command | Action |
 |---|---|
-| `proton login` or `proton open` | Open Bridge's window to sign in or manage accounts |
+| `proton login` or `proton gui` | Open the optional Spotty login window; fall back to the official Bridge GUI if it is not installed |
+| `proton open` | Open the official Bridge GUI to manage accounts and mail-client settings |
 | `proton start` | Launch Bridge without showing its window, using the saved login |
 | `proton install` | Open Proton's official installation guide |
 | `proton help` | Show command help inside Spotty |
 
-Sign in inside Bridge, including any two-factor authentication. Bridge owns
-the saved account and credentials; enter passwords only in its window.
+The optional native [login companion](proton-bridge-gui/README.md) adds GUI
+fields for your username, account password, two-factor code, separate mailbox
+password, and security-key PIN. It also shows saved accounts and a switch for
+opening Bridge at desktop login. Install it using Cargo:
+
+```sh
+cargo install --path proton-bridge-gui --locked
+```
+
+The trigger finds `spotty-proton-bridge-gui` on `PATH` or in `~/.cargo/bin`.
+This is a companion window launched by Spotty; it is not embedded in Spotty's
+settings. Bridge's local API allows only one login frontend. If the official
+Bridge GUI is already running, use it or choose **Quit Bridge** there before
+selecting **Start Bridge** in the companion. Human verification uses the
+official GUI; switching to it may briefly restart a headless Bridge.
+
+Bridge owns the saved account and credentials; enter passwords only in a
+login window, never in Spotty's search bar.
 Configure your email client with the local IMAP/SMTP details and the
 Bridge-generated password displayed in Bridge.
 
-Closing Bridge's window keeps it running in the background, independently of
-Spotty. Keep **Settings → Open on startup** enabled in Bridge to reconnect at
+Closing either login window keeps Bridge running in the background,
+independently of Spotty. Enable **Open Bridge at desktop login** in the
+companion or **Settings → Open on startup** in Bridge to reconnect at
 desktop login ([startup instructions](https://proton.me/support/automatically-start-bridge)).
 Choosing **Quit Bridge** stops mail connectivity. Removing the Spotty trigger
 does not sign out of Bridge or change its startup setting.
