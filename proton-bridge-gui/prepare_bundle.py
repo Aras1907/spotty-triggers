@@ -21,6 +21,7 @@ SOURCE_HASH = "9e866cba24bc646f19de8bf051434c54d15a11550ebc6c6170fa8100269453aa"
 
 def verified_download(url, expected, destination, cache_name):
     cache = os.environ.get("SPOTTY_PROTON_BUNDLE_CACHE")
+    offline = os.environ.get("SPOTTY_PROTON_BUNDLE_OFFLINE", "").lower() in {"1", "true", "yes"}
     candidates = [destination]
     if cache:
         if not Path(cache).is_absolute():
@@ -31,6 +32,11 @@ def verified_download(url, expected, destination, cache_name):
             data = path.read_bytes()
             if hashlib.sha256(data).hexdigest() == expected:
                 return data
+    if offline:
+        raise FileNotFoundError(
+            f"Offline Bridge build needs {cache_name} in SPOTTY_PROTON_BUNDLE_CACHE "
+            "or Cargo's OUT_DIR, with its pinned SHA-256"
+        )
     request = urllib.request.Request(url, headers={"User-Agent": "Spotty-native-build"})
     with urllib.request.urlopen(request, timeout=120) as response:
         data = response.read()

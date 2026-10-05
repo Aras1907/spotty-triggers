@@ -61,6 +61,7 @@ pub enum Update {
         message: String,
     },
     Autostart(bool),
+    AutostartFailed(String),
     Closed,
     ConnectionEstablished,
 }
@@ -240,13 +241,17 @@ async fn run_session(
     }
     let ready = async {
         let accounts = get_accounts(&mut connection).await?;
-        let request = connection.unary(protocol::Empty {});
-        let autostart = connection
-            .client
-            .is_autostart_on(request)
-            .await?
-            .into_inner()
-            .value;
+        let autostart = if crate::background::is_flatpak() {
+            crate::background::autostart_enabled()
+        } else {
+            let request = connection.unary(protocol::Empty {});
+            connection
+                .client
+                .is_autostart_on(request)
+                .await?
+                .into_inner()
+                .value
+        };
         Ok::<_, tonic::Status>((accounts, autostart))
     }
     .await;
@@ -350,10 +355,21 @@ async fn run_session(
                         connection.login(method, account, secret).await
                     }
                     Some(Command::Autostart(value)) => {
-                        let request = connection.unary(protocol::Boolean { value });
-                        connection.client.set_is_autostart_on(request).await.map(|_| {
-                            send(Update::Autostart(value));
-                        })
+                        if crate::background::is_flatpak() {
+                            let update = crate::background::request_autostart(value)
+                                .await
+                                .and_then(|()| crate::background::set_autostart_marker(value));
+                            match update {
+                                Ok(()) => send(Update::Autostart(value)),
+                                Err(message) => send(Update::AutostartFailed(message)),
+                            }
+                            Ok(())
+                        } else {
+                            let request = connection.unary(protocol::Boolean { value });
+                            connection.client.set_is_autostart_on(request).await.map(|_| {
+                                send(Update::Autostart(value));
+                            })
+                        }
                     }
                     Some(Command::ShowAccount(id)) => {
                         show_account(&mut connection, id, &send).await;

@@ -6,6 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=prepare_bundle.py");
     println!("cargo:rerun-if-changed=native_dependencies.json");
     println!("cargo:rerun-if-env-changed=SPOTTY_PROTON_BUNDLE_CACHE");
+    println!("cargo:rerun-if-env-changed=SPOTTY_PROTON_BUNDLE_OFFLINE");
     if std::env::var_os("CARGO_FEATURE_BUNDLED_BRIDGE").is_some() {
         if std::env::var("CARGO_CFG_TARGET_OS")? != "linux"
             || std::env::var("CARGO_CFG_TARGET_ARCH")? != "x86_64"

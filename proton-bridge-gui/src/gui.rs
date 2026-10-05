@@ -8,7 +8,7 @@ use std::time::Duration;
 use zeroize::{Zeroize, Zeroizing};
 
 struct LoginWindow {
-    runtime: tokio::runtime::Runtime,
+    runtime: Option<tokio::runtime::Runtime>,
     commands: Option<tokio::sync::mpsc::UnboundedSender<Command>>,
     updates: mpsc::Receiver<Update>,
     username: String,
@@ -41,11 +41,13 @@ impl LoginWindow {
     fn unconnected() -> Self {
         let (_, updates) = mpsc::channel();
         Self {
-            runtime: tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(1)
-                .enable_all()
-                .build()
-                .expect("Cannot start the local connection worker"),
+            runtime: Some(
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(1)
+                    .enable_all()
+                    .build()
+                    .expect("Cannot start the local connection worker"),
+            ),
             commands: None,
             updates,
             username: String::new(),
@@ -94,12 +96,15 @@ impl LoginWindow {
         self.ready = false;
         self.busy = true;
         self.connecting_since = Some(std::time::Instant::now());
-        self.runtime.spawn(async move {
-            session::run(path, receiver, |update| {
-                let _ = updates.send(update);
-            })
-            .await;
-        });
+        self.runtime
+            .as_ref()
+            .expect("Bridge model runtime is already shutting down")
+            .spawn(async move {
+                session::run(path, receiver, |update| {
+                    let _ = updates.send(update);
+                })
+                .await;
+            });
     }
 
     fn clear_secrets(&mut self) {
@@ -157,6 +162,12 @@ impl LoginWindow {
         let mut changed = false;
         while let Ok(update) = self.updates.try_recv() {
             changed = true;
+            // A close request wins over any queued account or credential
+            // response. In particular, never restore a generated password
+            // while an embedded page is being detached.
+            if self.closing && !matches!(&update, Update::Closed) {
+                continue;
+            }
             match update {
                 Update::ConnectionEstablished => {
                     self.auto_start = false;
@@ -243,6 +254,12 @@ impl LoginWindow {
                     }
                     .into();
                 }
+                Update::AutostartFailed(message) => {
+                    // Keep account settings and the login step intact. Rendering
+                    // the unchanged autostart value also restores the switch.
+                    self.busy = false;
+                    self.message = message;
+                }
                 Update::Closed => {
                     self.mail_settings = None;
                     self.commands = None;
@@ -265,14 +282,35 @@ impl LoginWindow {
         }
         self.closing = true;
         self.start_pending = None;
+        self.connecting_since = None;
         self.mail_settings = None;
         self.clear_secrets();
         if self.commands.is_none() {
             self.close_finished = true;
         } else {
             self.message = "Disconnecting the login window while keeping Bridge running…".into();
-            self.send(Command::Close);
+            if self
+                .commands
+                .as_ref()
+                .is_none_or(|sender| sender.send(Command::Close).is_err())
+            {
+                // A dead worker has already detached its stream. Do not keep
+                // the embedded controller alive waiting for an update it
+                // cannot deliver.
+                self.commands = None;
+                self.close_finished = true;
+            }
         }
+    }
+
+    fn detach_embedded(&mut self) {
+        self.username.zeroize();
+        self.accounts.clear();
+        self.mail_settings = None;
+        self.mail_revision += 1;
+        self.open_official = false;
+        self.official_wait = None;
+        self.begin_close();
     }
 
     fn start_bridge(&mut self) {
@@ -283,35 +321,38 @@ impl LoginWindow {
         self.preparing = Some(receiver);
         self.busy = true;
         self.message = "Preparing the packaged Bridge runtime…".into();
-        self.runtime.spawn_blocking(move || {
-            let result = (|| -> Result<(), String> {
-                let plan = crate::launch::backend_launch()?;
-                // Independent lifetime; credentials never appear in argv.
-                let mut process = Process::new(plan.executable);
-                crate::bundle::configure_libraries(&plan.launcher, &mut process);
-                process
-                    .args(plan.arguments)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null());
-                unsafe {
-                    process.pre_exec(|| {
-                        if libc::setsid() == -1 {
-                            return Err(std::io::Error::last_os_error());
-                        }
-                        Ok(())
+        self.runtime
+            .as_ref()
+            .expect("Bridge model runtime is already shutting down")
+            .spawn_blocking(move || {
+                let result = (|| -> Result<(), String> {
+                    let plan = crate::launch::backend_launch()?;
+                    // Independent lifetime; credentials never appear in argv.
+                    let mut process = Process::new(plan.executable);
+                    crate::bundle::configure_libraries(&plan.launcher, &mut process);
+                    process
+                        .args(plan.arguments)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null());
+                    unsafe {
+                        process.pre_exec(|| {
+                            if libc::setsid() == -1 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                            Ok(())
+                        });
+                    }
+                    let mut child = process
+                        .spawn()
+                        .map_err(|_| "Cannot start the native Bridge runtime.".to_owned())?;
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
                     });
-                }
-                let mut child = process
-                    .spawn()
-                    .map_err(|_| "Cannot start the native Bridge runtime.".to_owned())?;
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-                Ok(())
-            })();
-            let _ = sender.send(result);
-        });
+                    Ok(())
+                })();
+                let _ = sender.send(result);
+            });
     }
 
     fn open_official(&mut self) {
@@ -441,6 +482,16 @@ impl LoginWindow {
     }
 }
 
+impl Drop for LoginWindow {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            // Bundled runtime extraction runs on Tokio's blocking pool. Its
+            // cleanup must not stall GTK while this model is dropped.
+            runtime.shutdown_background();
+        }
+    }
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().any(|argument| argument == "--background") {
         // No window at desktop login; release the stream for later interaction.
@@ -502,11 +553,25 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// Build the Bridge controls inside Spotty's own PreferencesWindow. The page
 /// owns the same login/session model as the standalone helper UI, while the
 /// caller controls navigation back to its surrounding settings page.
-pub fn embedded(
-    parent: &adw::PreferencesWindow,
-    on_back: impl Fn() + 'static,
-) -> gtk::Widget {
-    window::embedded(parent, on_back)
+pub struct EmbeddedBridge(window::EmbeddedBridge);
+
+impl EmbeddedBridge {
+    /// Build Bridge controls in Spotty's PreferencesWindow. Keep this handle
+    /// for as long as the page is installed; close it when the page is removed.
+    pub fn new(parent: &adw::PreferencesWindow, on_back: impl Fn() + 'static) -> Self {
+        Self(window::EmbeddedBridge::new(parent, on_back))
+    }
+
+    /// Return the widget to place in the surrounding preferences page.
+    pub fn widget(&self) -> gtk::Widget {
+        self.0.widget()
+    }
+
+    /// Detach the login RPC stream and release the embedded UI after Bridge
+    /// acknowledges `Close`. The Bridge service itself remains running.
+    pub fn close(self) {
+        self.0.close();
+    }
 }
 
 #[cfg(test)]
@@ -603,5 +668,55 @@ mod tests {
         assert!(!window.busy);
         assert_eq!(window.accounts[0].2, 0);
         assert_eq!(window.step, Step::Password);
+    }
+
+    #[test]
+    fn embedded_detach_clears_account_state_and_waits_for_rpc_close() {
+        let mut window = LoginWindow::unconnected();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        window.commands = Some(sender);
+        window.username = "test@proton.me".into();
+        window.accounts = vec![("account-id".into(), "test@proton.me".into(), 2)];
+        window.password = Zeroizing::new("account-secret".into());
+        window.mail_settings = Some(session::MailSettings {
+            id: "account-id".into(),
+            username: "test@proton.me".into(),
+            addresses: vec!["test@proton.me".into()],
+            password: Zeroizing::new("generated-secret".into()),
+            hostname: "127.0.0.1".into(),
+            imap_port: 1143,
+            smtp_port: 1025,
+            imap_ssl: false,
+            smtp_ssl: true,
+        });
+
+        window.detach_embedded();
+
+        assert!(window.username.is_empty());
+        assert!(window.accounts.is_empty());
+        assert!(window.password.is_empty());
+        assert!(window.mail_settings.is_none());
+        assert!(!window.close_finished);
+        assert!(matches!(receiver.try_recv(), Ok(Command::Close)));
+
+        let (updates, update_receiver) = mpsc::channel();
+        window.updates = update_receiver;
+        updates.send(Update::Closed).unwrap();
+        window.poll();
+        assert!(window.close_finished);
+        assert!(window.commands.is_none());
+    }
+
+    #[test]
+    fn embedded_detach_finishes_if_the_rpc_worker_is_already_gone() {
+        let mut window = LoginWindow::unconnected();
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        window.commands = Some(sender);
+        drop(receiver);
+
+        window.detach_embedded();
+
+        assert!(window.close_finished);
+        assert!(window.commands.is_none());
     }
 }

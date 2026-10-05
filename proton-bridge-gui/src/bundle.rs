@@ -26,6 +26,14 @@ fn write_startup_launcher(root: &std::path::Path) -> std::io::Result<()> {
     let spotty = std::env::current_exe()?
         .to_string_lossy()
         .replace('\'', "'\\''");
+    let background_start = std::env::var("FLATPAK_ID")
+        .ok()
+        .filter(|app_id| !app_id.is_empty())
+        .map(|app_id| {
+            let app_id = app_id.replace('\'', "'\\''");
+            format!("exec flatpak run --command=spotty '{app_id}' --proton-bridge-gui --background")
+        })
+        .unwrap_or_else(|| format!("exec '{spotty}' --proton-bridge-gui --background"));
     // Keep the bundled libraries available on desktop login. Initialize and
     // detach the frontend in the background so it can be reopened later.
     let script = format!(
@@ -33,7 +41,7 @@ fn write_startup_launcher(root: &std::path::Path) -> std::io::Result<()> {
 bridge_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
 export LD_LIBRARY_PATH="${{bridge_root}}/runtime-libs${{LD_LIBRARY_PATH:+:${{LD_LIBRARY_PATH}}}}"
 case "$1" in
-  --no-window) exec '{spotty}' --proton-bridge-gui --background ;;
+  --no-window) {background_start} ;;
 esac
 exec "${{bridge_root}}/usr/lib/protonmail/bridge/proton-bridge" --launcher "${{bridge_root}}/spotty-bridge-launcher" "$@"
 "#

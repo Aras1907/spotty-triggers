@@ -14,7 +14,26 @@ struct Secrets {
     generated: Rc<RefCell<Option<gtk::Entry>>>,
 }
 
+#[derive(Clone)]
+struct WeakSecrets {
+    password: glib::WeakRef<adw::PasswordEntryRow>,
+    code: glib::WeakRef<adw::PasswordEntryRow>,
+    mailbox: glib::WeakRef<adw::PasswordEntryRow>,
+    pin: glib::WeakRef<adw::PasswordEntryRow>,
+    generated: std::rc::Weak<RefCell<Option<gtk::Entry>>>,
+}
+
 impl Secrets {
+    fn downgrade(&self) -> WeakSecrets {
+        WeakSecrets {
+            password: self.password.downgrade(),
+            code: self.code.downgrade(),
+            mailbox: self.mailbox.downgrade(),
+            pin: self.pin.downgrade(),
+            generated: Rc::downgrade(&self.generated),
+        }
+    }
+
     fn clear_login(&self) {
         for row in [&self.password, &self.code, &self.mailbox, &self.pin] {
             row.set_text("");
@@ -30,6 +49,18 @@ impl Secrets {
     fn clear_all(&self) {
         self.clear_login();
         self.clear_generated();
+    }
+}
+
+impl WeakSecrets {
+    fn upgrade(&self) -> Option<Secrets> {
+        Some(Secrets {
+            password: self.password.upgrade()?,
+            code: self.code.upgrade()?,
+            mailbox: self.mailbox.upgrade()?,
+            pin: self.pin.upgrade()?,
+            generated: self.generated.upgrade()?,
+        })
     }
 }
 
@@ -109,9 +140,12 @@ fn submit_action(
     method: LoginMethod,
 ) -> impl Fn() + 'static {
     let model = model.clone();
-    let username = username.clone();
-    let secrets = secrets.clone();
+    let username = username.downgrade();
+    let secrets = secrets.downgrade();
     move || {
+        let (Some(username), Some(secrets)) = (username.upgrade(), secrets.upgrade()) else {
+            return;
+        };
         let mut state = model.borrow_mut();
         if !state.ready || state.busy || state.closing {
             return;
@@ -282,7 +316,7 @@ impl Window {
             .build();
         {
             let model = model.clone();
-            let secrets = secrets.clone();
+            let secrets = secrets.downgrade();
             cancel.connect_clicked(move |_| {
                 let mut state = model.borrow_mut();
                 state.clear_secrets();
@@ -290,7 +324,9 @@ impl Window {
                 state.busy = true;
                 let username = state.username.clone();
                 state.send(Command::Cancel(username));
-                secrets.clear_all();
+                if let Some(secrets) = secrets.upgrade() {
+                    secrets.clear_all();
+                }
             });
         }
         body.append(&cancel);
@@ -343,10 +379,12 @@ impl Window {
             .build();
         {
             let model = model.clone();
-            let secrets = secrets.clone();
+            let secrets = secrets.downgrade();
             official.connect_clicked(move |_| {
                 model.borrow_mut().open_official();
-                secrets.clear_all();
+                if let Some(secrets) = secrets.upgrade() {
+                    secrets.clear_all();
+                }
             });
         }
         body.append(&official);
@@ -365,11 +403,13 @@ impl Window {
             .build();
         {
             let model = model.clone();
-            let secrets = secrets.clone();
+            let secrets = secrets.downgrade();
             let popover = popover.downgrade();
             menu_official.connect_clicked(move |_| {
                 model.borrow_mut().open_official();
-                secrets.clear_all();
+                if let Some(secrets) = secrets.upgrade() {
+                    secrets.clear_all();
+                }
                 if let Some(popover) = popover.upgrade() {
                     popover.popdown();
                 }
@@ -381,10 +421,14 @@ impl Window {
             .build();
         {
             let model = model.clone();
-            let secrets = secrets.clone();
-            let username = username.clone();
+            let secrets = secrets.downgrade();
+            let username = username.downgrade();
             let popover = popover.downgrade();
             add_account.connect_clicked(move |_| {
+                let (Some(secrets), Some(username)) = (secrets.upgrade(), username.upgrade())
+                else {
+                    return;
+                };
                 let mut state = model.borrow_mut();
                 if !state.ready || state.busy || state.closing {
                     return;
@@ -424,10 +468,12 @@ impl Window {
             .css_classes(["pill"])
             .build();
         if let Some(on_back) = on_back {
-            let secrets = secrets.clone();
+            let secrets = secrets.downgrade();
             close.set_label("Back to Spotty Settings");
             close.connect_clicked(move |_| {
-                secrets.clear_login();
+                if let Some(secrets) = secrets.upgrade() {
+                    secrets.clear_login();
+                }
                 on_back();
             });
         } else {
@@ -444,25 +490,30 @@ impl Window {
             .tightening_threshold(420)
             .child(&body)
             .build();
-        let scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .child(&clamp)
-            .build();
         if embedded {
-            overlay.set_child(Some(&scroll));
+            // PreferencesPage already scrolls its contents. Nesting a second
+            // ScrolledWindow here prevents the page from negotiating a useful
+            // natural height for the embedded Bridge controls.
+            overlay.set_child(Some(&clamp));
         } else {
+            let scroll = gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .vscrollbar_policy(gtk::PolicyType::Automatic)
+                .child(&clamp)
+                .build();
             toolbar.set_content(Some(&scroll));
             overlay.set_child(Some(&toolbar));
         }
         if let Some(standalone) = &standalone_window {
             standalone.set_content(Some(&overlay));
             let model = model.clone();
-            let secrets = secrets.clone();
+            let secrets = secrets.downgrade();
             standalone.connect_close_request(move |_| {
                 let mut state = model.borrow_mut();
                 state.begin_close();
-                secrets.clear_all();
+                if let Some(secrets) = secrets.upgrade() {
+                    secrets.clear_all();
+                }
                 if state.close_finished && !state.open_official && state.official_started.is_none()
                 {
                     glib::Propagation::Proceed
@@ -716,14 +767,16 @@ impl Window {
                     let id = id.clone();
                     let account_id = id.clone();
                     let model = self.model.clone();
-                    let secrets = self.secrets.clone();
+                    let secrets = self.secrets.downgrade();
                     button.connect_clicked(move |_| {
                         let mut state = model.borrow_mut();
                         state.mail_settings = None;
                         state.clear_secrets();
                         state.busy = true;
                         state.send(Command::ShowAccount(id.clone()));
-                        secrets.clear_all();
+                        if let Some(secrets) = secrets.upgrade() {
+                            secrets.clear_all();
+                        }
                     });
                     row.add_suffix(&button);
                     let logout = gtk::Button::builder()
@@ -732,7 +785,7 @@ impl Window {
                         .css_classes(["flat"])
                         .build();
                     let model = self.model.clone();
-                    let secrets = self.secrets.clone();
+                    let secrets = self.secrets.downgrade();
                     let parent = self.window.downgrade();
                     logout.connect_clicked(move |_| {
                         let Some(parent) = parent.upgrade() else { return };
@@ -751,7 +804,9 @@ impl Window {
                             if dialog.choose_future(&parent).await.as_str() == "sign-out" {
                                 let mut state = model.borrow_mut();
                                 state.logout(account_id);
-                                secrets.clear_all();
+                                if let Some(secrets) = secrets.upgrade() {
+                                    secrets.clear_all();
+                                }
                             }
                         });
                     });
@@ -762,10 +817,15 @@ impl Window {
                         .valign(gtk::Align::Center)
                         .build();
                     let account_name = name.clone();
-                    let username = self.username.clone();
+                    let username = self.username.downgrade();
                     let model = self.model.clone();
-                    let secrets = self.secrets.clone();
+                    let secrets = self.secrets.downgrade();
                     button.connect_clicked(move |_| {
+                        let (Some(username), Some(secrets)) =
+                            (username.upgrade(), secrets.upgrade())
+                        else {
+                            return;
+                        };
                         let mut state = model.borrow_mut();
                         state.username.clone_from(&account_name);
                         state.mail_settings = None;
@@ -814,26 +874,96 @@ impl Window {
     }
 }
 
-pub(super) fn embedded(
-    parent: &adw::PreferencesWindow,
-    on_back: impl Fn() + 'static,
-) -> gtk::Widget {
-    let mut model = LoginWindow::unconnected();
-    model.embedded = true;
-    model.connect();
-    let ui = Window::build(
-        parent.clone().upcast(),
-        None,
-        Rc::new(RefCell::new(model)),
-        Some(Rc::new(on_back)),
-    );
-    let timer_ui = ui.clone();
-    glib::timeout_add_local(Duration::from_millis(100), move || {
-        timer_ui.model.borrow_mut().tick();
-        timer_ui.render();
-        glib::ControlFlow::Continue
-    });
-    ui.overlay.clone().upcast()
+pub(super) struct EmbeddedBridge {
+    ui: Option<Rc<Window>>,
+    timer: Option<glib::SourceId>,
+}
+
+impl EmbeddedBridge {
+    pub(super) fn new(parent: &adw::PreferencesWindow, on_back: impl Fn() + 'static) -> Self {
+        let mut model = LoginWindow::unconnected();
+        model.embedded = true;
+        model.connect();
+        let ui = Window::build(
+            parent.clone().upcast(),
+            None,
+            Rc::new(RefCell::new(model)),
+            Some(Rc::new(on_back)),
+        );
+        Self::from_ui(ui)
+    }
+
+    fn from_ui(ui: Rc<Window>) -> Self {
+        let weak_ui = Rc::downgrade(&ui);
+        let timer = glib::timeout_add_local(Duration::from_millis(100), move || {
+            let Some(ui) = weak_ui.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            ui.model.borrow_mut().tick();
+            ui.render();
+            glib::ControlFlow::Continue
+        });
+        Self {
+            ui: Some(ui),
+            timer: Some(timer),
+        }
+    }
+
+    pub(super) fn widget(&self) -> gtk::Widget {
+        self.ui
+            .as_ref()
+            .expect("embedded Bridge handle is closed")
+            .overlay
+            .clone()
+            .upcast()
+    }
+
+    pub(super) fn close(mut self) {
+        self.close_inner();
+    }
+
+    fn close_inner(&mut self) {
+        let Some(ui) = self.ui.take() else {
+            return;
+        };
+        if let Some(timer) = self.timer.take() {
+            timer.remove();
+        }
+        ui.secrets.clear_all();
+        ui.username.set_text("");
+        {
+            let mut state = ui.model.borrow_mut();
+            // Uninstalling while the official-window action is pending should
+            // detach the embedded login stream without opening another UI.
+            state.detach_embedded();
+        }
+
+        if ui.model.borrow().close_finished {
+            ui.secrets.clear_all();
+            return;
+        }
+
+        // Keep the controller (and its Tokio runtime) alive while the session
+        // sends the RPC Close frame and reports Update::Closed. The callback
+        // owns the UI only during this short drain, then drops it on Break.
+        glib::timeout_add_local(Duration::from_millis(50), move || {
+            ui.model.borrow_mut().poll();
+            ui.secrets.clear_all();
+            let finished = ui.model.borrow().close_finished;
+            if finished {
+                ui.secrets.clear_all();
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+}
+
+impl Drop for EmbeddedBridge {
+    fn drop(&mut self) {
+        self.close_inner();
+    }
 }
 
 pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -935,6 +1065,94 @@ mod tests {
             .render_texture(&node, None)
             .save_to_png(std::path::PathBuf::from(directory).join(format!("{name}.png")))
             .unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a native desktop display; run with --ignored --test-threads=1"]
+    fn embedded_page_removal_drains_rpc_then_releases_ui_and_model() {
+        adw::init().unwrap();
+        let parent = adw::PreferencesWindow::new();
+        let page = adw::PreferencesPage::new();
+        let group = adw::PreferencesGroup::new();
+        let mut state = LoginWindow::unconnected();
+        state.embedded = true;
+        state.auto_start = false;
+        state.ready = true;
+        state.username = "test@proton.me".into();
+        state.password = Zeroizing::new("login-secret".into());
+        state.accounts = vec![("account-id".into(), "test@proton.me".into(), 2)];
+        state.mail_settings = Some(session::MailSettings {
+            id: "account-id".into(),
+            username: "test@proton.me".into(),
+            addresses: vec!["test@proton.me".into()],
+            password: Zeroizing::new("generated-bridge-secret".into()),
+            hostname: "127.0.0.1".into(),
+            imap_port: 1143,
+            smtp_port: 1025,
+            imap_ssl: false,
+            smtp_ssl: true,
+        });
+        let (commands, mut command_receiver) = tokio::sync::mpsc::unbounded_channel();
+        state.commands = Some(commands);
+        let (updates, update_receiver) = mpsc::channel();
+        state.updates = update_receiver;
+        let model = Rc::new(RefCell::new(state));
+        let ui = Window::build(
+            parent.clone().upcast(),
+            None,
+            model.clone(),
+            Some(Rc::new(|| {})),
+        );
+        ui.render();
+        ui.secrets.password.set_text("login-secret");
+        let generated = ui.secrets.generated.borrow().as_ref().unwrap().clone();
+        let weak_ui = Rc::downgrade(&ui);
+        let weak_model = Rc::downgrade(&model);
+        let handle = EmbeddedBridge::from_ui(ui.clone());
+        group.add(&handle.widget());
+        page.add(&group);
+        parent.add(&page);
+        parent.set_visible_page(&page);
+        parent.set_default_size(640, 720);
+        parent.present();
+        pump();
+        {
+            let ui = weak_ui
+                .upgrade()
+                .expect("embedded UI should remain installed");
+            assert!(
+                ui.overlay.height() >= 300,
+                "embedded UI collapsed vertically"
+            );
+            assert!(ui.username.is_visible() && ui.username.height() > 0);
+            assert!(ui.secrets.password.is_visible() && ui.secrets.password.height() > 0);
+        }
+        drop(ui);
+        drop(model);
+
+        handle.close();
+        parent.remove(&page);
+        drop(group);
+        drop(page);
+
+        assert!(generated.text().is_empty());
+        assert!(weak_model.upgrade().is_some());
+        {
+            let ui = weak_ui.upgrade().expect("drain timer should retain the UI");
+            assert!(ui.secrets.password.text().is_empty());
+            assert!(ui.model.borrow().username.is_empty());
+            assert!(ui.model.borrow().accounts.is_empty());
+            assert!(ui.model.borrow().mail_settings.is_none());
+        }
+        assert!(matches!(command_receiver.try_recv(), Ok(Command::Close)));
+        assert!(weak_ui.upgrade().is_some());
+
+        updates.send(Update::Closed).unwrap();
+        pump();
+        assert!(weak_ui.upgrade().is_none());
+        assert!(weak_model.upgrade().is_none());
+        drop(generated);
+        drop(command_receiver);
     }
 
     #[test]

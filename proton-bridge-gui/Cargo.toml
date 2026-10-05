@@ -3,7 +3,7 @@ name = "spotty-proton-bridge-gui"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Optional native Proton Mail Bridge login window for Spotty"
+description = "Embedded Proton Mail Bridge settings for Spotty"
 
 [features]
 default = ["bundled-bridge"]

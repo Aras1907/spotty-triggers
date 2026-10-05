@@ -14,15 +14,28 @@ fn executable(path: &Path) -> bool {
 }
 
 pub fn official_launcher() -> Result<PathBuf, String> {
-    let installed = std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
-        .map(|directory| directory.join("protonmail-bridge"))
-        .find(|path| executable(path));
-    if let Some(launcher) = installed {
-        return Ok(launcher);
+    // Keep Bridge inside Spotty's private runtime when the feature is enabled.
+    // This is especially important in Flatpak: the bundled payload is built
+    // for the app and needs its library path, Secret Service access and network
+    // permissions. A host installation is only used by builds that opt out of
+    // the bundled runtime.
+    #[cfg(feature = "bundled-bridge")]
+    {
+        return crate::bundle::launcher();
     }
-    crate::bundle::launcher()
+
+    #[cfg(not(feature = "bundled-bridge"))]
+    {
+        let installed = std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+            .map(|directory| directory.join("protonmail-bridge"))
+            .find(|path| executable(path));
+        if let Some(launcher) = installed {
+            return Ok(launcher);
+        }
+        crate::bundle::launcher()
+    }
 }
 
 pub fn backend_launch() -> Result<BackendLaunch, String> {
