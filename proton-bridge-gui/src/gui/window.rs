@@ -45,7 +45,8 @@ struct Rendered {
 
 struct Window {
     model: Model,
-    window: adw::ApplicationWindow,
+    window: gtk::Window,
+    standalone_window: Option<adw::ApplicationWindow>,
     overlay: adw::ToastOverlay,
     status: gtk::Label,
     spinner: gtk::Spinner,
@@ -142,12 +143,24 @@ impl Window {
             .default_height(760)
             .width_request(360)
             .build();
+        Self::build(window.clone().upcast(), Some(window), model, None)
+    }
+
+    fn build(
+        window: gtk::Window,
+        standalone_window: Option<adw::ApplicationWindow>,
+        model: Model,
+        on_back: Option<Rc<dyn Fn()>>,
+    ) -> Rc<Self> {
+        let embedded = model.borrow().embedded;
         let overlay = adw::ToastOverlay::new();
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::builder()
             .title_widget(&adw::WindowTitle::new("Proton Mail Bridge", "Spotty"))
             .build();
-        toolbar.add_top_bar(&header);
+        if !embedded {
+            toolbar.add_top_bar(&header);
+        }
         let body = gtk::Box::new(gtk::Orientation::Vertical, 18);
         for margin in ["margin-start", "margin-end", "margin-top", "margin-bottom"] {
             body.set_property(margin, 18i32);
@@ -397,18 +410,34 @@ impl Window {
         options.append(&help);
         popover.set_child(Some(&options));
         menu.set_popover(Some(&popover));
-        header.pack_end(&menu);
+        if embedded {
+            let actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            actions.set_halign(gtk::Align::End);
+            actions.append(&menu);
+            body.prepend(&actions);
+        } else {
+            header.pack_end(&menu);
+        }
         let close = gtk::Button::builder()
             .label("Close and keep Bridge running")
             .halign(gtk::Align::Center)
             .css_classes(["pill"])
             .build();
-        let weak_window = window.downgrade();
-        close.connect_clicked(move |_| {
-            if let Some(window) = weak_window.upgrade() {
-                window.close();
-            }
-        });
+        if let Some(on_back) = on_back {
+            let secrets = secrets.clone();
+            close.set_label("Back to Spotty Settings");
+            close.connect_clicked(move |_| {
+                secrets.clear_login();
+                on_back();
+            });
+        } else {
+            let weak_window = standalone_window.as_ref().unwrap().downgrade();
+            close.connect_clicked(move |_| {
+                if let Some(window) = weak_window.upgrade() {
+                    window.close();
+                }
+            });
+        }
         body.append(&close);
         let clamp = adw::Clamp::builder()
             .maximum_size(540)
@@ -420,13 +449,17 @@ impl Window {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .child(&clamp)
             .build();
-        toolbar.set_content(Some(&scroll));
-        overlay.set_child(Some(&toolbar));
-        window.set_content(Some(&overlay));
-        {
+        if embedded {
+            overlay.set_child(Some(&scroll));
+        } else {
+            toolbar.set_content(Some(&scroll));
+            overlay.set_child(Some(&toolbar));
+        }
+        if let Some(standalone) = &standalone_window {
+            standalone.set_content(Some(&overlay));
             let model = model.clone();
             let secrets = secrets.clone();
-            window.connect_close_request(move |_| {
+            standalone.connect_close_request(move |_| {
                 let mut state = model.borrow_mut();
                 state.begin_close();
                 secrets.clear_all();
@@ -441,6 +474,7 @@ impl Window {
         let ui = Rc::new(Self {
             model,
             window,
+            standalone_window,
             overlay,
             status,
             spinner,
@@ -643,7 +677,8 @@ impl Window {
         );
         self.menu_official.set_sensitive(can_recover);
         self.add_account.set_sensitive(enabled);
-        self.close.set_visible(state.step == Step::Finished);
+        self.close
+            .set_visible(state.embedded || state.step == Step::Finished);
         if state.secrets_revision != rendered.secrets_revision {
             self.secrets.clear_login();
             rendered.secrets_revision = state.secrets_revision;
@@ -779,6 +814,28 @@ impl Window {
     }
 }
 
+pub(super) fn embedded(
+    parent: &adw::PreferencesWindow,
+    on_back: impl Fn() + 'static,
+) -> gtk::Widget {
+    let mut model = LoginWindow::unconnected();
+    model.embedded = true;
+    model.connect();
+    let ui = Window::build(
+        parent.clone().upcast(),
+        None,
+        Rc::new(RefCell::new(model)),
+        Some(Rc::new(on_back)),
+    );
+    let timer_ui = ui.clone();
+    glib::timeout_add_local(Duration::from_millis(100), move || {
+        timer_ui.model.borrow_mut().tick();
+        timer_ui.render();
+        glib::ControlFlow::Continue
+    });
+    ui.overlay.clone().upcast()
+}
+
 pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     adw::init()?;
     let app = adw::Application::builder()
@@ -792,12 +849,13 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         model.connect();
         let ui = Window::new(app, Rc::new(RefCell::new(model)));
-        ui.window.present();
+        ui.standalone_window.as_ref().unwrap().present();
         glib::timeout_add_local(Duration::from_millis(100), move || {
             ui.model.borrow_mut().tick();
             ui.render();
             let state = ui.model.borrow();
-            let close = state.closing
+            let close = ui.standalone_window.is_some()
+                && state.closing
                 && state.close_finished
                 && !state.open_official
                 && state.official_started.is_none();
@@ -995,7 +1053,12 @@ mod tests {
         let sign_out = button_in(&account_row, "Sign out").unwrap();
         sign_out.emit_clicked();
         pump();
-        let dialog = ui.window.visible_dialog().unwrap();
+        let dialog = ui
+            .standalone_window
+            .as_ref()
+            .unwrap()
+            .visible_dialog()
+            .unwrap();
         button_in(&dialog, "Cancel").unwrap().emit_clicked();
         pump();
         assert!(receiver.try_recv().is_err());
@@ -1003,7 +1066,12 @@ mod tests {
 
         sign_out.emit_clicked();
         pump();
-        let dialog = ui.window.visible_dialog().unwrap();
+        let dialog = ui
+            .standalone_window
+            .as_ref()
+            .unwrap()
+            .visible_dialog()
+            .unwrap();
         button_in(&dialog, "Sign out").unwrap().emit_clicked();
         pump();
         assert!(matches!(receiver.try_recv().unwrap(), Command::Logout(id) if id == "account-id"));

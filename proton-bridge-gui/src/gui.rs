@@ -34,6 +34,7 @@ struct LoginWindow {
     connecting_since: Option<std::time::Instant>,
     secrets_revision: u64,
     mail_revision: u64,
+    embedded: bool,
 }
 
 impl LoginWindow {
@@ -70,6 +71,7 @@ impl LoginWindow {
             connecting_since: None,
             secrets_revision: 0,
             mail_revision: 0,
+            embedded: false,
         }
     }
 
@@ -405,6 +407,10 @@ impl LoginWindow {
                 self.close_finished = false;
                 self.message =
                     "Cannot open the official Bridge window. Reconnect to try again.".into();
+            } else if self.embedded {
+                self.closing = false;
+                self.close_finished = false;
+                self.message = "Official Bridge opened. Reconnect when it is ready.".into();
             }
             changed = true;
         }
@@ -491,6 +497,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     window::run()
+}
+
+/// Build the Bridge controls inside Spotty's own PreferencesWindow. The page
+/// owns the same login/session model as the standalone helper UI, while the
+/// caller controls navigation back to its surrounding settings page.
+pub fn embedded(
+    parent: &adw::PreferencesWindow,
+    on_back: impl Fn() + 'static,
+) -> gtk::Widget {
+    window::embedded(parent, on_back)
 }
 
 #[cfg(test)]
