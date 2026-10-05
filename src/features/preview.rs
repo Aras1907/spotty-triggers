@@ -123,8 +123,8 @@ pub struct PreviewPane {
     video: gtk::Video,
     text: gtk::TextView,
     iicon: gtk::Image,
-    ititle: gtk::Label,
-    isub: gtk::Label,
+    imetadata: gtk::Grid,
+    ihint: gtk::Label,
     // Music overview page widgets.
     mcover: gtk::Picture,
     mtitle: gtk::Label,
@@ -297,28 +297,34 @@ impl PreviewPane {
         // Info card
         let ib = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(6)
-            .halign(gtk::Align::Center)
-            .valign(gtk::Align::Center)
+            .spacing(12)
+            .halign(gtk::Align::Fill)
+            .valign(gtk::Align::Start)
             .vexpand(true)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(16)
             .build();
-        let iicon = gtk::Image::builder().pixel_size(48).build();
-        let ititle = gtk::Label::builder()
-            .ellipsize(pango::EllipsizeMode::Middle)
-            .max_width_chars(22)
-            .css_classes(["title-4"])
+        let iicon = gtk::Image::builder().pixel_size(64).halign(gtk::Align::Center).build();
+        let metadata_heading = gtk::Label::builder()
+            .label(gettext("Metadata"))
+            .halign(gtk::Align::Start)
+            .css_classes(["heading"])
             .build();
-        let isub = gtk::Label::builder()
-            .css_classes(["dim-label", "caption"])
-            .wrap(true)
-            .justify(gtk::Justification::Left)
-            .xalign(0.5)
-            .use_markup(false)
+        let imetadata = gtk::Grid::builder()
+            .column_spacing(16)
+            .row_spacing(8)
+            .hexpand(true)
             .build();
-        isub.set_max_width_chars(28);
         ib.append(&iicon);
-        ib.append(&ititle);
-        ib.append(&isub);
+        ib.append(&metadata_heading);
+        ib.append(&imetadata);
+        let ihint = gtk::Label::builder()
+            .css_classes(["caption", "dim-label"])
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .build();
+        ib.append(&ihint);
         stack.add_named(&ib, Some("info"));
 
         // Music overview: large cover art, title, artist + source badge, and
@@ -498,8 +504,8 @@ impl PreviewPane {
             video,
             text,
             iicon,
-            ititle,
-            isub,
+            imetadata,
+            ihint,
             mcover,
             mtitle,
             mmeta,
@@ -1142,101 +1148,80 @@ impl PreviewPane {
         } else {
             self.iicon.set_icon_name(Some(info_icon_for(p)));
         }
-        self.ititle.set_text(
-            &p.file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default(),
-        );
-
-        // Build the info text
-        let mut info_lines = Vec::new();
-
-        if is_dir {
-            // Full path
-            info_lines.push(p.display().to_string());
-            // Count items
-            if let Ok(entries) = std::fs::read_dir(p) {
-                let count = entries.count();
-                info_lines.push(format!(
-                    "{} item{}",
-                    count,
-                    if count == 1 { "" } else { "s" }
-                ));
-            }
-            // Show last modified date
-            if let Ok(meta) = std::fs::metadata(p) {
-                if let Ok(modified) = meta.modified() {
-                    if let Ok(elapsed) = modified.elapsed() {
-                        let secs = elapsed.as_secs();
-                        let when = if secs < 60 {
-                            "just now".to_string()
-                        } else if secs < 3600 {
-                            format!("{} min ago", secs / 60)
-                        } else if secs < 86400 {
-                            format!("{} hr ago", secs / 3600)
-                        } else if secs < 604800 {
-                            format!(
-                                "{} day{} ago",
-                                secs / 86400,
-                                if secs / 86400 == 1 { "" } else { "s" }
-                            )
-                        } else if secs < 2_592_000 {
-                            format!(
-                                "{} week{} ago",
-                                secs / 604800,
-                                if secs / 604800 == 1 { "" } else { "s" }
-                            )
-                        } else {
-                            format!(
-                                "{} month{} ago",
-                                secs / 2_592_000,
-                                if secs / 2_592_000 == 1 { "" } else { "s" }
-                            )
-                        };
-                        info_lines.push(format!("Modified {}", when));
-                    }
-                }
-            }
-            info_lines.push(String::new()); // blank line spacer
-            info_lines.push("Ctrl+Enter — open in terminal".into());
-        } else {
-            // File: size + last modified + hints
-            if let Ok(meta) = std::fs::metadata(p) {
-                let b = meta.len();
-                info_lines.push(crate::imageinfo::human_size(b));
-                if let Ok(modified) = meta.modified() {
-                    if let Ok(elapsed) = modified.elapsed() {
-                        let secs = elapsed.as_secs();
-                        let when = if secs < 60 {
-                            "just now".to_string()
-                        } else if secs < 3600 {
-                            format!("{} min ago", secs / 60)
-                        } else if secs < 86400 {
-                            format!("{} hr ago", secs / 3600)
-                        } else if secs < 604800 {
-                            format!(
-                                "{} day{} ago",
-                                secs / 86400,
-                                if secs / 86400 == 1 { "" } else { "s" }
-                            )
-                        } else {
-                            format!(
-                                "{} day{} ago",
-                                secs / 86400,
-                                if secs / 86400 == 1 { "" } else { "s" }
-                            )
-                        };
-                        info_lines.push(format!("Modified {}", when));
-                    }
-                }
-            }
-            info_lines.push(String::new());
-            info_lines.push("Enter — open with default app".into());
+        while let Some(child) = self.imetadata.first_child() {
+            self.imetadata.remove(&child);
         }
 
-        self.isub.set_text(&info_lines.join("\n"));
+        let name = p.file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.display().to_string());
+        let path = p.parent()
+            .map(|parent| parent.display().to_string())
+            .unwrap_or_else(|| p.display().to_string());
+        let type_description = if is_dir {
+            gettext("Folder")
+        } else {
+            let (content_type, _) = gio::content_type_guess(Some(p), &[]);
+            gio::content_type_get_description(content_type.as_str()).to_string()
+        };
+
+        let mut rows = vec![
+            (gettext("Name"), name),
+            (gettext("Where"), path),
+            (gettext("Type"), type_description),
+        ];
+        if let Ok(meta) = std::fs::metadata(p) {
+            if is_dir {
+                if let Ok(entries) = std::fs::read_dir(p) {
+                    rows.push((gettext("Items"), entries.count().to_string()));
+                }
+            } else {
+                rows.push((gettext("Size"), crate::imageinfo::human_size(meta.len())));
+            }
+            if let Ok(created) = meta.created() {
+                rows.push((gettext("Created"), format_metadata_time(created)));
+            }
+            if let Ok(modified) = meta.modified() {
+                rows.push((gettext("Modified"), format_metadata_time(modified)));
+            }
+        }
+
+        for (row, (label, value)) in rows.into_iter().enumerate() {
+            let key = gtk::Label::builder()
+                .label(&label)
+                .halign(gtk::Align::Start)
+                .valign(gtk::Align::Start)
+                .css_classes(["caption", "dim-label"])
+                .build();
+            let value = gtk::Label::builder()
+                .label(&value)
+                .halign(gtk::Align::Start)
+                .valign(gtk::Align::Start)
+                .hexpand(true)
+                .wrap(true)
+                .selectable(true)
+                .max_width_chars(28)
+                .ellipsize(pango::EllipsizeMode::Middle)
+                .build();
+            self.imetadata.attach(&key, 0, row as i32, 1, 1);
+            self.imetadata.attach(&value, 1, row as i32, 1, 1);
+        }
+        self.ihint.set_text(if is_dir {
+            "Ctrl+Enter — open in terminal"
+        } else {
+            "Enter — open with default app"
+        });
         self.stack.set_visible_child_name("info");
     }
+}
+
+fn format_metadata_time(time: std::time::SystemTime) -> String {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| gtk::glib::DateTime::from_unix_local(duration.as_secs() as i64).ok())
+        .and_then(|datetime| datetime.format("%x %X").ok())
+        .map(|formatted| formatted.to_string())
+        .unwrap_or_else(|| gettext("Unknown"))
 }
 
 // ──────────────────────────────────────────────────────────────────────
