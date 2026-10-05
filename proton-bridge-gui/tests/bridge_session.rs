@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tokio_stream::{
     Stream,
     wrappers::{ReceiverStream, UnixListenerStream},
@@ -40,6 +40,9 @@ struct State {
     stops: AtomicUsize,
     quits: AtomicUsize,
     busy: AtomicBool,
+    quiet_stream: AtomicBool,
+    stream_reject_delay_ms: AtomicUsize,
+    quiet_release: Notify,
 }
 
 #[derive(Clone)]
@@ -55,6 +58,20 @@ fn authenticate<T>(request: &Request<T>) -> Result<(), Status> {
         return Err(Status::unauthenticated("invalid token"));
     }
     Ok(())
+}
+
+fn bridge_test_certificate() -> (String, String) {
+    let mut params = rcgen::CertificateParams::new(vec!["127.0.0.1".into()]).unwrap();
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.key_usages = vec![
+        rcgen::KeyUsagePurpose::DigitalSignature,
+        rcgen::KeyUsagePurpose::KeyEncipherment,
+        rcgen::KeyUsagePurpose::KeyCertSign,
+    ];
+    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    let key = rcgen::KeyPair::generate().unwrap();
+    let cert = params.self_signed(&key).unwrap();
+    (cert.pem(), key.serialize_pem())
 }
 
 impl Mock {
@@ -291,15 +308,24 @@ impl Bridge for Mock {
         request: Request<p::StreamRequest>,
     ) -> Result<Response<Self::RunEventStreamStream>, Status> {
         authenticate(&request)?;
+        let delay = self.0.stream_reject_delay_ms.load(Ordering::SeqCst);
+        if delay > 0 {
+            tokio::time::sleep(Duration::from_millis(delay as u64)).await;
+        }
         if self.0.busy.load(Ordering::SeqCst) {
             return Err(Status::already_exists("another frontend owns login"));
         }
         let (sender, receiver) = mpsc::channel(16);
-        sender
-            .send(Ok(p::StreamEvent { event: None }))
-            .await
-            .unwrap();
+        if !self.0.quiet_stream.load(Ordering::SeqCst) {
+            sender
+                .send(Ok(p::StreamEvent { event: None }))
+                .await
+                .unwrap();
+        }
         *self.0.events.lock().unwrap() = Some(sender);
+        if self.0.quiet_stream.load(Ordering::SeqCst) {
+            self.0.quiet_release.notified().await;
+        }
         Ok(Response::new(EventStream {
             receiver: ReceiverStream::new(receiver),
             state: self.0.clone(),
@@ -312,6 +338,7 @@ impl Bridge for Mock {
         authenticate(&request)?;
         self.0.normal_end.store(true, Ordering::SeqCst);
         self.0.stops.fetch_add(1, Ordering::SeqCst);
+        self.0.quiet_release.notify_one();
         self.0.events.lock().unwrap().take();
         Ok(Response::new(p::Empty {}))
     }
@@ -333,12 +360,12 @@ async fn server() -> ServerFixture {
     let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
     let socket = directory.path().join("bridge.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+    let (certificate, private_key) = bridge_test_certificate();
     let path = directory.path().join("grpcServerConfig.json");
     std::fs::write(
         &path,
         serde_json::to_vec(&serde_json::json!({
-            "cert": certificate.cert.pem(), "token": TOKEN, "fileSocketPath": socket,
+            "cert": certificate.clone(), "token": TOKEN, "fileSocketPath": socket,
         }))
         .unwrap(),
     )
@@ -347,10 +374,9 @@ async fn server() -> ServerFixture {
     let service = Mock(state.clone());
     let task = tokio::spawn(async move {
         Server::builder()
-            .tls_config(ServerTlsConfig::new().identity(Identity::from_pem(
-                certificate.cert.pem(),
-                certificate.signing_key.serialize_pem(),
-            )))
+            .tls_config(
+                ServerTlsConfig::new().identity(Identity::from_pem(certificate, private_key)),
+            )
             .unwrap()
             .add_service(BridgeServer::new(service))
             .serve_with_incoming(UnixListenerStream::new(listener))
@@ -510,7 +536,7 @@ async fn occupied_bridge_frontend_is_never_stopped_or_given_credentials() {
     assert!(matches!(
         next(&mut messages).await,
         Update::Error {
-            step: Step::OfficialGui,
+            step: Step::Password,
             ..
         }
     ));
@@ -525,14 +551,84 @@ async fn wrong_certificate_cannot_receive_credentials() {
     let fixture = server().await;
     let mut config: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&fixture.path).unwrap()).unwrap();
-    config["cert"] = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()])
-        .unwrap()
-        .cert
-        .pem()
-        .into();
+    config["cert"] = bridge_test_certificate().0.into();
     std::fs::write(&fixture.path, serde_json::to_vec(&config).unwrap()).unwrap();
     assert!(Connection::connect(&fixture.path).await.is_err());
     assert!(fixture.state.login_calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn quiet_stream_does_not_block_readiness_and_detaches_cleanly() {
+    let fixture = server().await;
+    fixture.state.signed_out.store(true, Ordering::SeqCst);
+    fixture.state.quiet_stream.store(true, Ordering::SeqCst);
+    let (commands, receiver) = mpsc::unbounded_channel();
+    let (updates, mut messages) = mpsc::unbounded_channel();
+    let session = tokio::spawn(session::run(
+        fixture.path.clone(),
+        receiver,
+        move |message| {
+            let _ = updates.send(message);
+        },
+    ));
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), next(&mut messages))
+            .await
+            .unwrap(),
+        Update::Ready { .. }
+    ));
+    commands.send(Command::Close).unwrap();
+    assert!(matches!(next(&mut messages).await, Update::Closed));
+    session.await.unwrap();
+    assert_eq!(fixture.state.stops.load(Ordering::SeqCst), 1);
+    assert!(!fixture.state.unexpected_disconnect.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn delayed_occupied_stream_error_does_not_stop_the_other_frontend() {
+    let fixture = server().await;
+    fixture.state.signed_out.store(true, Ordering::SeqCst);
+    fixture.state.busy.store(true, Ordering::SeqCst);
+    fixture
+        .state
+        .stream_reject_delay_ms
+        .store(500, Ordering::SeqCst);
+    let (commands, receiver) = mpsc::unbounded_channel();
+    let (updates, mut messages) = mpsc::unbounded_channel();
+    let session = tokio::spawn(session::run(
+        fixture.path.clone(),
+        receiver,
+        move |message| {
+            let _ = updates.send(message);
+        },
+    ));
+    commands.send(Command::OpenOfficial).unwrap();
+    let first = next(&mut messages).await;
+    assert!(matches!(first, Update::Ready { .. }));
+    assert!(matches!(next(&mut messages).await, Update::Closed));
+    session.await.unwrap();
+    assert_eq!(fixture.state.stops.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.state.quits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn missing_bridge_configuration_returns_to_password_retry_state() {
+    let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let missing = directory.path().join("absent-config.json");
+    let (_commands, receiver) = mpsc::unbounded_channel();
+    let (updates, mut messages) = mpsc::unbounded_channel();
+    session::run(missing, receiver, move |message| {
+        let _ = updates.send(message);
+    })
+    .await;
+    assert!(matches!(
+        messages.recv().await,
+        Some(Update::Error {
+            step: Step::Password,
+            ..
+        })
+    ));
+    assert!(matches!(messages.recv().await, Some(Update::Closed)));
 }
 
 #[tokio::test]

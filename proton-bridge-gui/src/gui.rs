@@ -31,6 +31,7 @@ struct LoginWindow {
     official_started: Option<mpsc::Receiver<bool>>,
     start_pending: Option<std::time::Instant>,
     preparing: Option<mpsc::Receiver<Result<(), String>>>,
+    connecting_since: Option<std::time::Instant>,
     secrets_revision: u64,
     mail_revision: u64,
 }
@@ -66,6 +67,7 @@ impl LoginWindow {
             official_started: None,
             start_pending: None,
             preparing: None,
+            connecting_since: None,
             secrets_revision: 0,
             mail_revision: 0,
         }
@@ -89,6 +91,7 @@ impl LoginWindow {
         self.message = "Connecting to Proton Mail Bridge…".into();
         self.ready = false;
         self.busy = true;
+        self.connecting_since = Some(std::time::Instant::now());
         self.runtime.spawn(async move {
             session::run(path, receiver, |update| {
                 let _ = updates.send(update);
@@ -163,6 +166,7 @@ impl LoginWindow {
                     self.accounts = accounts;
                     self.auto_start = false;
                     self.start_pending = None;
+                    self.connecting_since = None;
                     self.autostart = autostart;
                     self.ready = true;
                     self.busy = false;
@@ -196,6 +200,7 @@ impl LoginWindow {
                     self.message = message;
                     self.mail_settings = None;
                     self.busy = false;
+                    self.connecting_since = None;
                     self.clear_secrets();
                 }
                 Update::MailSettings(settings) => {
@@ -241,6 +246,7 @@ impl LoginWindow {
                     self.commands = None;
                     self.ready = false;
                     self.busy = false;
+                    self.connecting_since = None;
                     self.clear_secrets();
                     if self.closing {
                         self.close_finished = true;
@@ -331,6 +337,20 @@ impl LoginWindow {
     // the widget tree is retained, so edits and focus survive worker updates.
     fn tick(&mut self) -> bool {
         let mut changed = self.poll();
+        if self
+            .connecting_since
+            .is_some_and(|started| started.elapsed() > Duration::from_secs(40))
+        {
+            self.connecting_since = None;
+            // Ask the session to detach gracefully. Aborting its task can
+            // make Bridge interpret the dropped stream as a request to quit.
+            self.busy = true;
+            self.message =
+                "Bridge is taking longer than expected to connect. Closing its login stream…"
+                    .into();
+            self.send(Command::Close);
+            changed = true;
+        }
         if let Some(result) = self
             .preparing
             .as_ref()
@@ -493,6 +513,38 @@ mod tests {
         window.begin_close();
         assert!(window.code.is_empty());
         assert!(matches!(receiver.try_recv().unwrap(), Command::Close));
+    }
+
+    #[test]
+    fn connection_watchdog_requests_graceful_close_instead_of_aborting_stream() {
+        let mut window = LoginWindow::unconnected();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        window.commands = Some(sender);
+        window.connecting_since = Some(std::time::Instant::now() - Duration::from_secs(41));
+        window.busy = true;
+        window.tick();
+        assert!(window.busy);
+        assert!(window.commands.is_some());
+        assert!(window.message.contains("Closing its login stream"));
+        assert!(matches!(receiver.try_recv(), Ok(Command::Close)));
+    }
+
+    #[test]
+    fn ordinary_connection_error_returns_to_retryable_password_step() {
+        let mut window = LoginWindow::unconnected();
+        let (updates, receiver) = mpsc::channel();
+        window.updates = receiver;
+        updates
+            .send(Update::Error {
+                step: Step::Password,
+                message: "Bridge is not running. Start Bridge, then reconnect.".into(),
+            })
+            .unwrap();
+        updates.send(Update::Closed).unwrap();
+        window.poll();
+        assert_eq!(window.step, Step::Password);
+        assert!(!window.busy);
+        assert!(window.commands.is_none());
     }
 
     #[test]

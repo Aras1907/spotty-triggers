@@ -65,6 +65,12 @@ pub enum Update {
     ConnectionEstablished,
 }
 
+enum StreamUpdate {
+    Event(protocol::StreamEvent),
+    Failed(tonic::Status),
+    Ended,
+}
+
 pub fn login_update(event: login_event::Event) -> Update {
     use login_event::Event::*;
     match event {
@@ -147,7 +153,10 @@ async fn run_session(
         Ok(connection) => connection,
         Err(message) => {
             send(Update::Error {
-                step: Step::OfficialGui,
+                // A missing or starting local backend is a normal retry case.
+                // Reserve OfficialGui for conditions that need user action in
+                // Proton's own interface (verification, keyring, blocked key).
+                step: Step::Password,
                 message,
             });
             send(Update::Closed);
@@ -160,7 +169,7 @@ async fn run_session(
     let request = connection.unary(protocol::Empty {});
     if let Err(status) = connection.client.gui_ready(request).await {
         send(Update::Error {
-            step: Step::OfficialGui,
+            step: Step::Password,
             message: status_message(&status),
         });
         send(Update::Closed);
@@ -169,38 +178,64 @@ async fn run_session(
     let request = connection.request(protocol::StreamRequest {
         client_platform: "linux".into(),
     });
-    let mut stream = match connection.client.run_event_stream(request).await {
-        Ok(response) => response.into_inner(),
-        Err(status) => {
+    // Bridge's Go server does not send response headers until the first event.
+    // Start the stream reader independently, as the official Qt frontend does,
+    // so a quiet stream cannot block ordinary unary startup requests.
+    let (stream_updates, mut stream_messages) = mpsc::unbounded_channel();
+    let mut stream_client = connection.client.clone();
+    let stream_task = tokio::spawn(async move {
+        match stream_client.run_event_stream(request).await {
+            Ok(response) => {
+                let mut stream = response.into_inner();
+                loop {
+                    match stream.message().await {
+                        Ok(Some(event)) => {
+                            if stream_updates.send(StreamUpdate::Event(event)).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(None) => {
+                            let _ = stream_updates.send(StreamUpdate::Ended);
+                            return;
+                        }
+                        Err(status) => {
+                            let _ = stream_updates.send(StreamUpdate::Failed(status));
+                            return;
+                        }
+                    }
+                }
+            }
+            Err(status) => {
+                let _ = stream_updates.send(StreamUpdate::Failed(status));
+            }
+        }
+    });
+    // An occupied stream is normally rejected immediately, while a quiet
+    // stream remains pending for headers. The protocol has no ownership ACK.
+    let mut stream_owned = true;
+    let mut stream_confirmed = false;
+    let mut initial_events = Vec::new();
+    match tokio::time::timeout(Duration::from_millis(250), stream_messages.recv()).await {
+        Ok(Some(StreamUpdate::Failed(status))) => {
             send(Update::Error {
-                step: Step::OfficialGui,
+                step: Step::Password,
                 message: status_message(&status),
             });
             send(Update::Closed);
             return;
         }
-    };
-    // Probe the first message. An occupied stream can be rejected in trailers,
-    // after the initial RPC returns successfully. Never call StopEventStream
-    // before we know this stream belongs to us.
-    match tokio::time::timeout(Duration::from_millis(250), stream.message()).await {
-        Ok(Err(status)) => {
-            send(Update::Error {
-                step: Step::OfficialGui,
-                message: status_message(&status),
-            });
-            send(Update::Closed);
-            return;
+        Ok(Some(StreamUpdate::Event(event))) => {
+            stream_confirmed = true;
+            initial_events.push(event);
         }
-        Ok(Ok(None)) => {
+        Ok(Some(StreamUpdate::Ended)) | Ok(None) => {
             send(Update::Error {
-                step: Step::OfficialGui,
+                step: Step::Password,
                 message: "Bridge closed the login connection. Reconnect.".into(),
             });
             send(Update::Closed);
             return;
         }
-        Ok(Ok(Some(event))) => dispatch(&mut connection, event, &send).await,
         Err(_) => {}
     }
     let ready = async {
@@ -215,8 +250,37 @@ async fn run_session(
         Ok::<_, tonic::Status>((accounts, autostart))
     }
     .await;
+    while let Ok(update) = stream_messages.try_recv() {
+        match update {
+            StreamUpdate::Event(event) => {
+                stream_confirmed = true;
+                initial_events.push(event);
+            }
+            StreamUpdate::Failed(status) => {
+                send(Update::Error {
+                    step: Step::Password,
+                    message: status_message(&status),
+                });
+                send(Update::Closed);
+                let _ = tokio::time::timeout(Duration::from_secs(2), stream_task).await;
+                return;
+            }
+            StreamUpdate::Ended => {
+                send(Update::Error {
+                    step: Step::Password,
+                    message: "Bridge closed the login connection. Reconnect.".into(),
+                });
+                send(Update::Closed);
+                let _ = tokio::time::timeout(Duration::from_secs(2), stream_task).await;
+                return;
+            }
+        }
+    }
     match ready {
         Ok((accounts, autostart)) => {
+            for event in initial_events {
+                dispatch(&mut connection, event, &send).await;
+            }
             let first_connected = accounts
                 .iter()
                 .find(|(_, _, state)| *state == 2)
@@ -233,12 +297,22 @@ async fn run_session(
         }
         Err(status) => {
             send(Update::Error {
-                step: Step::OfficialGui,
+                step: Step::Password,
                 message: status_message(&status),
             });
             // A cancelled event stream makes Bridge quit. Always stop it
             // gracefully before dropping our connection, including errors.
-            let _ = connection.stop_stream().await;
+            if stream_owned && !stream_confirmed {
+                if let Ok(Some(StreamUpdate::Failed(_))) =
+                    tokio::time::timeout(Duration::from_millis(750), stream_messages.recv()).await
+                {
+                    stream_owned = false;
+                }
+            }
+            if stream_owned {
+                let _ = connection.stop_stream().await;
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(2), stream_task).await;
             send(Update::Closed);
             return;
         }
@@ -246,6 +320,29 @@ async fn run_session(
     let mut username = String::new();
     loop {
         tokio::select! {
+            biased;
+            event = stream_messages.recv() => {
+                match event {
+                    Some(StreamUpdate::Event(event)) => {
+                        stream_owned = true;
+                        stream_confirmed = true;
+                        if matches!(event.event.as_ref(), Some(stream_event::Event::Login(login)) if matches!(login.event, Some(login_event::Event::Finished(_)) | Some(login_event::Event::AlreadyLoggedIn(_)))) {
+                            username.clear();
+                        }
+                        dispatch(&mut connection, event, &send).await;
+                    }
+                    Some(StreamUpdate::Failed(status)) => {
+                        stream_owned = false;
+                        send(Update::Error { step: Step::Password, message: status_message(&status) });
+                        break;
+                    }
+                    Some(StreamUpdate::Ended) | None => {
+                        stream_owned = false;
+                        send(Update::Error { step: Step::Password, message: "Bridge disconnected. Reconnect to continue.".into() });
+                        break;
+                    }
+                }
+            }
             command = commands.recv() => {
                 let result = match command {
                     Some(Command::Login { method, username: account, secret }) => {
@@ -291,7 +388,25 @@ async fn run_session(
                     Some(Command::Close) | None => {
                         if !username.is_empty() { abort(&mut connection, username).await; }
                         // Keep Bridge alive after the companion window closes.
-                        let result = connection.stop_stream().await;
+                        if stream_owned && !stream_confirmed {
+                            match tokio::time::timeout(Duration::from_millis(750), stream_messages.recv()).await {
+                                Ok(Some(StreamUpdate::Failed(status))) => {
+                                    stream_owned = false;
+                                    send(Update::Error { step: Step::Password, message: status_message(&status) });
+                                }
+                                Ok(Some(StreamUpdate::Event(_))) => {}
+                                Ok(Some(StreamUpdate::Ended)) | Ok(None) => stream_owned = false,
+                                Err(_) => {}
+                            }
+                        }
+                        while let Ok(update) = stream_messages.try_recv() {
+                            match update {
+                                StreamUpdate::Failed(_) | StreamUpdate::Ended => stream_owned = false,
+                                StreamUpdate::Event(_) => stream_owned = true,
+                            }
+                        }
+                        let result = if stream_owned { connection.stop_stream().await } else { Ok(()) };
+                        stream_owned = false;
                         if result.is_err() {
                             send(Update::Error { step: Step::OfficialGui, message: "Could not detach cleanly. Check that Bridge is still running.".into() });
                         }
@@ -302,9 +417,27 @@ async fn run_session(
                         // A headless --grpc Bridge cannot display a window.
                         // The user requested the official GUI: release our
                         // stream and quit this instance so it can be relaunched.
-                        let _ = connection.stop_stream().await;
-                        let request = connection.unary(protocol::Empty {});
-                        let _ = connection.client.quit(request).await;
+                        if stream_owned && !stream_confirmed {
+                            match tokio::time::timeout(Duration::from_millis(750), stream_messages.recv()).await {
+                                Ok(Some(StreamUpdate::Failed(_))) => stream_owned = false,
+                                Ok(Some(StreamUpdate::Event(_))) => {}
+                                Ok(Some(StreamUpdate::Ended)) | Ok(None) => stream_owned = false,
+                                Err(_) => {}
+                            }
+                        }
+                        while let Ok(update) = stream_messages.try_recv() {
+                            match update {
+                                StreamUpdate::Failed(_) | StreamUpdate::Ended => stream_owned = false,
+                                StreamUpdate::Event(_) => stream_owned = true,
+                            }
+                        }
+                        let can_quit = stream_owned;
+                        if can_quit { let _ = connection.stop_stream().await; }
+                        stream_owned = false;
+                        if can_quit {
+                            let request = connection.unary(protocol::Empty {});
+                            let _ = connection.client.quit(request).await;
+                        }
                         break;
                     }
                 };
@@ -312,23 +445,15 @@ async fn run_session(
                     send(Update::Error { step: Step::OfficialGui, message: status_message(&status) });
                 }
             }
-            event = stream.message() => {
-                match event {
-                    Ok(Some(event)) => {
-                        if matches!(event.event.as_ref(), Some(stream_event::Event::Login(login)) if matches!(login.event, Some(login_event::Event::Finished(_)) | Some(login_event::Event::AlreadyLoggedIn(_)))) {
-                            username.clear();
-                        }
-                        dispatch(&mut connection, event, &send).await;
-                    }
-                    Ok(None) | Err(_) => {
-                        send(Update::Error { step: Step::OfficialGui, message: "Bridge disconnected. Reconnect to continue.".into() });
-                        let _ = connection.stop_stream().await;
-                        break;
-                    }
-                }
-            }
         }
     }
+    // If the stream was still waiting for its first headers, stop it using the
+    // Bridge RPC before dropping the reader task; dropping the HTTP/2 request
+    // makes Bridge interpret the client as having quit.
+    if stream_owned {
+        let _ = connection.stop_stream().await;
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(2), stream_task).await;
     send(Update::Closed);
 }
 

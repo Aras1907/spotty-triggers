@@ -169,7 +169,7 @@
     "word": "",
     "description": "Local mail server with Proton login and mail-client credentials",
     "icon": "mail-send-receive-symbolic",
-    "version": "1.3.0",
+    "version": "1.3.1",
     "author": "spotty",
     "shortcut": "",
     "native": true,

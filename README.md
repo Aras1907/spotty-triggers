@@ -63,7 +63,7 @@ Management is a core backend and cannot be removed.
 ## Proton Mail Bridge (optional service)
 
 Proton Mail Bridge is a local background IMAP/SMTP server, not a search
-trigger. Enable it in **Settings → Search → Server-side installations**, or
+trigger. Click **Install** in **Settings → Search → Server-side installations**, or
 click **Install** in the Store's separate **Server-side installations**
 section. Then click **Settings** to open its native GTK4/libadwaita window.
 No trigger word or shortcut is registered. Existing Proton trigger installs
@@ -76,8 +76,9 @@ IMAP/SMTP host, ports and encryption settings for a new email client.
 
 Use **Sign out** beside an account to disconnect it, then **Sign in** to
 connect it again. Closing Settings leaves Bridge running. **Start Bridge at
-desktop login** controls automatic reconnection. Disabling the optional service
-hides its Settings access without deleting Bridge accounts or stopping mail.
+desktop login** controls automatic reconnection. **Uninstall** removes the optional
+service from Spotty and hides its Settings access; saved Bridge accounts and
+running mail connections are preserved. Click **Install** to restore access.
 
 The native Cargo package includes Bridge 3.27.0 for Linux x86_64, with no
 separate helper installation, system-wide package writes or Flatpak build.

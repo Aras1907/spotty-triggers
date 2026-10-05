@@ -1,18 +1,23 @@
 use crate::protocol::{self, bridge_client::BridgeClient};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use hyper_util::rt::TokioIo;
+use native_tls::Protocol;
 use serde::Deserialize;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::net::UnixStream;
+use tokio::net::{TcpStream, UnixStream};
 use tonic::metadata::{Ascii, MetadataValue};
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
+use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Status};
 use tower::service_fn;
 use zeroize::{Zeroize, Zeroizing};
+
+trait BridgeIo: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
+impl<T> BridgeIo for T where T: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
+type BoxedBridgeIo = Box<dyn BridgeIo + Unpin + Send>;
 
 #[derive(Deserialize)]
 struct ServerConfig {
@@ -89,30 +94,62 @@ impl Connection {
             .parse()
             .map_err(|_| "Bridge's local authentication token is invalid.")?;
         config.token.zeroize();
-        // Trust only the certificate supplied by this local Bridge instance.
-        // System roots, insecure TLS, and remote endpoints are never enabled.
-        let tls = ClientTlsConfig::new()
-            .domain_name("127.0.0.1")
-            .ca_certificate(Certificate::from_pem(config.cert));
-        let endpoint = Endpoint::from_shared(format!("https://127.0.0.1:{}", config.port.max(1)))
+        // Bridge's local certificate is self-signed and marked as a CA by its
+        // Go TLS server. Use OpenSSL's normal certificate/hostname validation
+        // with only this certificate as a trust root; do not use system roots.
+        let certificate = native_tls::Certificate::from_pem(config.cert.as_bytes())
+            .map_err(|_| "Bridge's local certificate is invalid.")?;
+        config.cert.zeroize();
+        let mut tls_builder = native_tls::TlsConnector::builder();
+        tls_builder
+            .disable_built_in_roots(true)
+            .add_root_certificate(certificate)
+            .min_protocol_version(Some(Protocol::Tlsv12))
+            .request_alpns(&["h2"]);
+        let tls = tokio_native_tls::TlsConnector::from(
+            tls_builder
+                .build()
+                .map_err(|_| "Cannot configure Bridge's local TLS connection.")?,
+        );
+        let port = config.port.max(1);
+        let endpoint = Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
             .map_err(|_| "Invalid local Bridge endpoint.")?
-            .connect_timeout(Duration::from_secs(3))
-            .tls_config(tls)
-            .map_err(|_| "Cannot verify Bridge's local TLS certificate.")?;
-        let channel = if config.socket.as_os_str().is_empty() {
-            endpoint.connect().await
-        } else {
-            let socket = config.socket;
-            endpoint
-                .connect_with_connector(service_fn(move |_| {
-                    let socket = socket.clone();
-                    async move { UnixStream::connect(socket).await.map(TokioIo::new) }
-                }))
-                .await
-        }
-        .map_err(
-            |_| "Cannot connect securely to Bridge. Start or restart Bridge, then reconnect.",
-        )?;
+            .connect_timeout(Duration::from_secs(3));
+        let socket_path = config.socket;
+        // `connect_timeout` bounds the gRPC handshake, but a local socket
+        // connector can still wait on its own. Bound the whole transport setup
+        // so the GUI can always return to its retry state.
+        let connect = endpoint.connect_with_connector(service_fn(move |_| {
+            let socket = socket_path.clone();
+            let tls = tls.clone();
+            async move {
+                let stream: BoxedBridgeIo = if socket.as_os_str().is_empty() {
+                    Box::new(TcpStream::connect(("127.0.0.1", port)).await?)
+                } else {
+                    Box::new(UnixStream::connect(socket).await?)
+                };
+                let stream = tls
+                    .connect("127.0.0.1", stream)
+                    .await
+                    .map_err(std::io::Error::other)?;
+                let alpn = stream
+                    .get_ref()
+                    .negotiated_alpn()
+                    .map_err(std::io::Error::other)?;
+                if alpn.as_deref() != Some(b"h2") {
+                    return Err(std::io::Error::other("Bridge did not negotiate HTTP/2"));
+                }
+                Ok(TokioIo::new(stream))
+            }
+        }));
+        let channel = tokio::time::timeout(Duration::from_secs(5), connect)
+            .await
+            .map_err(
+                |_| "Timed out connecting to Bridge. Start or restart Bridge, then reconnect.",
+            )?
+            .map_err(
+                |_| "Cannot connect securely to Bridge. Start or restart Bridge, then reconnect.",
+            )?;
         Ok(Self {
             client: BridgeClient::new(channel),
             token,

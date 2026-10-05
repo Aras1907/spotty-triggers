@@ -14,8 +14,8 @@ session without stopping Bridge.
 ## User flow
 
 1. In the Store, find **Server-side installations** and click **Install**
-   for Proton Mail Bridge, or enable it in Search settings. This enables the local mail
-   server service; it adds no search keyword or shortcut.
+   for Proton Mail Bridge, or use **Install** in Search settings. This enables the
+   local mail server service; it adds no search keyword or shortcut.
 2. Click **Settings**. If signed out, enter your Proton account details and
    complete any two-factor, mailbox-password or security-key prompts.
 3. If already connected, Settings automatically retrieves the generated
@@ -26,6 +26,10 @@ session without stopping Bridge.
    Bridge to confirm sign-out. Use **Sign in** to connect again.
 5. Optionally enable **Start Bridge at desktop login**, then close Settings.
    Bridge keeps running independently of Spotty.
+
+Use **Uninstall** in either server section to remove the service from Spotty.
+This preserves saved accounts and running mail connections. **Install** restores
+access without adding a trigger word.
 
 Reopen the service's **Settings** button whenever you need mail credentials.
 The generated password is shown by default and can be hidden using its
@@ -39,6 +43,8 @@ is never stopped or replaced. Human verification and keyring setup can use
 handoff briefly restarts a headless Bridge. Normal closure keeps it running.
 
 ## Native Cargo packaging
+
+Native builds require GTK4, libadwaita and OpenSSL development libraries.
 
 The default `bundled-bridge` feature embeds the official Linux x86_64 runtime
 and its corresponding source archive. Cargo's build script uses Python 3's
@@ -74,7 +80,10 @@ variable can point to an absolute folder containing `bridge.deb` and
 ## Credentials and protocol
 
 Credentials travel to the local Unix socket or loopback TCP endpoint over TLS
-pinned to Bridge's own certificate and authenticated with its local token.
+trusted only through Bridge's own certificate and authenticated with its local token.
+The native TLS connector validates the hostname and certificate, requires TLS 1.2
+or newer and negotiates HTTP/2. It supports Bridge's self-signed CA certificate
+without enabling system trust roots or bypassing verification.
 The form never calls Proton's cloud API directly. Login fields are masked and
 cleared after submission, errors, cancellation and closure. Bridge manages
 saved login in its vault and Linux keyring. Mail-client passwords are retrieved
