@@ -139,6 +139,15 @@ impl LoginWindow {
         });
     }
 
+    fn logout(&mut self, account_id: String) {
+        self.mail_settings = None;
+        self.mail_revision += 1;
+        self.clear_secrets();
+        self.busy = true;
+        self.message = "Signing out and disconnecting mail clients…".into();
+        self.send(Command::Logout(account_id));
+    }
+
     fn poll(&mut self) -> bool {
         let mut changed = false;
         while let Ok(update) = self.updates.try_recv() {
@@ -206,9 +215,16 @@ impl LoginWindow {
                     self.step = Step::Finished;
                     self.busy = false;
                     self.clear_secrets();
-                    self.message =
-                        "Signed in. Copy the Bridge password and settings into your mail client."
-                            .into();
+                    self.message = "Connected to Proton Mail.".into();
+                }
+                Update::LoggedOut { accounts } => {
+                    self.mail_revision += 1;
+                    self.mail_settings = None;
+                    self.accounts = accounts;
+                    self.step = Step::Password;
+                    self.busy = false;
+                    self.clear_secrets();
+                    self.message = "Signed out of Proton Mail Bridge.".into();
                 }
                 Update::Autostart(value) => {
                     self.autostart = value;
@@ -477,5 +493,47 @@ mod tests {
         window.begin_close();
         assert!(window.code.is_empty());
         assert!(matches!(receiver.try_recv().unwrap(), Command::Close));
+    }
+
+    #[test]
+    fn logout_clears_generated_and_login_secrets_before_sending_command() {
+        let mut window = LoginWindow::unconnected();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        window.commands = Some(sender);
+        let (updates, update_receiver) = mpsc::channel();
+        window.updates = update_receiver;
+        window.ready = true;
+        window.password = Zeroizing::new("account-secret".into());
+        window.code = Zeroizing::new("verification-secret".into());
+        window.mailbox = Zeroizing::new("mailbox-secret".into());
+        window.pin = Zeroizing::new("pin-secret".into());
+        window.mail_settings = Some(session::MailSettings {
+            id: "account-id".into(),
+            username: "test@proton.me".into(),
+            addresses: vec!["test@proton.me".into()],
+            password: Zeroizing::new("generated-secret".into()),
+            hostname: "127.0.0.1".into(),
+            imap_port: 1143,
+            smtp_port: 1025,
+            imap_ssl: false,
+            smtp_ssl: true,
+        });
+        window.logout("account-id".into());
+        assert!(window.password.is_empty());
+        assert!(window.code.is_empty());
+        assert!(window.mailbox.is_empty());
+        assert!(window.pin.is_empty());
+        assert!(window.mail_settings.is_none());
+        assert!(window.busy);
+        assert!(matches!(receiver.try_recv().unwrap(), Command::Logout(id) if id == "account-id"));
+        updates
+            .send(Update::LoggedOut {
+                accounts: vec![("account-id".into(), "test@proton.me".into(), 0)],
+            })
+            .unwrap();
+        window.poll();
+        assert!(!window.busy);
+        assert_eq!(window.accounts[0].2, 0);
+        assert_eq!(window.step, Step::Password);
     }
 }

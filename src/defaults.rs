@@ -11,10 +11,7 @@ static CATALOG: LazyLock<Vec<RepoTrigger>> = LazyLock::new(|| {
 });
 
 pub fn supports_native(id: &str) -> bool {
-    if id == "proton-bridge" && !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        return false;
-    }
-    CATALOG.iter().any(|entry| entry.native && entry.id == id)
+    CATALOG.iter().any(|entry| entry.native && !entry.is_service() && entry.id == id)
 }
 
 fn keyword(entry: &RepoTrigger) -> CommandKeyword {
@@ -31,11 +28,11 @@ fn keyword(entry: &RepoTrigger) -> CommandKeyword {
 }
 
 pub fn command_keyword(id: &str) -> Option<CommandKeyword> {
-    CATALOG.iter().find(|entry| entry.native && entry.id == id).map(keyword)
+    CATALOG.iter().find(|entry| entry.native && !entry.is_service() && entry.id == id).map(keyword)
 }
 
 pub fn command_keywords() -> Vec<CommandKeyword> {
-    CATALOG.iter().filter(|entry| entry.preinstalled).map(keyword).collect()
+    CATALOG.iter().filter(|entry| entry.preinstalled && !entry.is_service()).map(keyword).collect()
 }
 
 /// Spotty's own software-store glyph (a bag with a download arrow), shipped in
@@ -65,7 +62,6 @@ pub fn display_name(id: &str) -> &'static str {
             "run" => "Cmd",
             "emoji" => "Emoji",
             "music" => "Music",
-            "proton-bridge" => "Proton Mail Bridge",
             "translate" => "Translate",
             "apps" => "Apps",
             "newapps" => "New Apps",
@@ -101,5 +97,20 @@ pub fn result_blurb(id: &str) -> String {
         "convert" => gettext("Units, currency and number bases"),
         "updates" => gettext("Flatpak, system, Snap and AppImage updates"),
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod service_tests {
+    use super::*;
+
+    #[test]
+    fn mail_service_has_no_search_keyword_or_native_trigger() {
+        let entry = CATALOG.iter().find(|entry| entry.id == "proton-bridge").unwrap();
+        assert!(entry.is_service());
+        assert!(entry.word.is_empty());
+        assert!(!supports_native("proton-bridge"));
+        assert!(command_keyword("proton-bridge").is_none());
+        assert!(command_keywords().iter().all(|keyword| keyword.id != "proton-bridge"));
     }
 }

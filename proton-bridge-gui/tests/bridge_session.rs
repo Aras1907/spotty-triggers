@@ -30,6 +30,11 @@ struct State {
     login_calls: Mutex<Vec<(String, String)>>,
     startup: AtomicBool,
     locked_account: AtomicBool,
+    signed_out: AtomicBool,
+    logout_pending: AtomicBool,
+    logout_list_polls: AtomicUsize,
+    logout_calls: Mutex<Vec<String>>,
+    account_settings_reads: AtomicUsize,
     normal_end: AtomicBool,
     unexpected_disconnect: AtomicBool,
     stops: AtomicUsize,
@@ -70,6 +75,9 @@ impl Mock {
             .unwrap()
             .push((name.into(), String::from_utf8(decoded).unwrap()));
         assert_eq!(request.username, "test@proton.me");
+        if matches!(&next, p::login_event::Event::Finished(_)) {
+            self.0.signed_out.store(false, Ordering::SeqCst);
+        }
         let sender = self.0.events.lock().unwrap().clone().unwrap();
         sender
             .send(Ok(p::StreamEvent {
@@ -120,18 +128,41 @@ impl Bridge for Mock {
         request: Request<p::Empty>,
     ) -> Result<Response<p::UserList>, Status> {
         authenticate(&request)?;
-        Ok(Response::new(p::UserList { users: vec![] }))
+        if self.0.logout_pending.load(Ordering::SeqCst)
+            && self.0.logout_list_polls.fetch_add(1, Ordering::SeqCst) >= 2
+        {
+            self.0.signed_out.store(true, Ordering::SeqCst);
+            self.0.logout_pending.store(false, Ordering::SeqCst);
+        }
+        Ok(Response::new(p::UserList {
+            users: vec![p::User {
+                id: "test-user".into(),
+                username: "test@proton.me".into(),
+                state: if self.0.signed_out.load(Ordering::SeqCst) {
+                    0
+                } else if self.0.locked_account.load(Ordering::SeqCst) {
+                    1
+                } else {
+                    2
+                },
+                password: b"secret-must-be-cleared".to_vec(),
+                addresses: vec![],
+            }],
+        }))
     }
     async fn get_user(
         &self,
         request: Request<p::StringValue>,
     ) -> Result<Response<p::User>, Status> {
         authenticate(&request)?;
+        self.0.account_settings_reads.fetch_add(1, Ordering::SeqCst);
         assert_eq!(request.into_inner().value, "test-user");
         Ok(Response::new(p::User {
             id: "test-user".into(),
             username: "test@proton.me".into(),
-            state: if self.0.locked_account.load(Ordering::SeqCst) {
+            state: if self.0.signed_out.load(Ordering::SeqCst) {
+                0
+            } else if self.0.locked_account.load(Ordering::SeqCst) {
                 1
             } else {
                 2
@@ -139,6 +170,18 @@ impl Bridge for Mock {
             password: b"BridgePasswordAbC123".to_vec(),
             addresses: vec!["test@proton.me".into()],
         }))
+    }
+    async fn logout_user(
+        &self,
+        request: Request<p::StringValue>,
+    ) -> Result<Response<p::Empty>, Status> {
+        authenticate(&request)?;
+        let id = request.into_inner().value;
+        assert_eq!(id, "test-user");
+        self.0.logout_calls.lock().unwrap().push(id);
+        self.0.logout_list_polls.store(0, Ordering::SeqCst);
+        self.0.logout_pending.store(true, Ordering::SeqCst);
+        Ok(Response::new(p::Empty {}))
     }
     async fn hostname(
         &self,
@@ -353,6 +396,13 @@ async fn login_challenges_startup_and_close_use_verified_local_transport() {
             ..
         }
     ));
+    match next(&mut messages).await {
+        Update::MailSettings(settings) => {
+            assert_eq!(settings.id, "test-user");
+            assert_eq!(*settings.password, "BridgePasswordAbC123");
+        }
+        _ => panic!("Existing connected account settings were not refreshed on attach"),
+    }
     for (method, secret, expected) in [
         (LoginMethod::Password, "password-example", Step::TwoFactor),
         (LoginMethod::TwoFactor, "012345", Step::MailboxPassword),
@@ -394,12 +444,54 @@ async fn login_challenges_startup_and_close_use_verified_local_transport() {
         .send(Command::ShowAccount("test-user".into()))
         .unwrap();
     assert!(matches!(next(&mut messages).await, Update::Error { .. }));
+    fixture.state.locked_account.store(false, Ordering::SeqCst);
+    commands.send(Command::Logout("test-user".into())).unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(matches!(
+        messages.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    match next(&mut messages).await {
+        Update::LoggedOut { accounts } => {
+            assert!(fixture.state.signed_out.load(Ordering::SeqCst));
+            assert!(fixture.state.logout_list_polls.load(Ordering::SeqCst) >= 3);
+            assert_eq!(accounts, [("test-user".into(), "test@proton.me".into(), 0)]);
+        }
+        _ => panic!("Successful logout did not refresh saved accounts"),
+    }
+    commands
+        .send(Command::ShowAccount("test-user".into()))
+        .unwrap();
+    assert!(matches!(next(&mut messages).await, Update::Error { .. }));
+    for (method, secret, expected) in [
+        (LoginMethod::Password, "again-password", Step::TwoFactor),
+        (LoginMethod::TwoFactor, "654321", Step::MailboxPassword),
+        (
+            LoginMethod::MailboxPassword,
+            "again-mailbox-password",
+            Step::Finished,
+        ),
+    ] {
+        commands
+            .send(Command::Login {
+                method,
+                username: "test@proton.me".into(),
+                secret: Zeroizing::new(secret.into()),
+            })
+            .unwrap();
+        assert!(matches!(next(&mut messages).await, Update::Step(step) if step == expected));
+    }
+    assert!(matches!(
+        next(&mut messages).await,
+        Update::MailSettings(settings) if *settings.password == "BridgePasswordAbC123"
+    ));
     commands.send(Command::Autostart(true)).unwrap();
     assert!(matches!(next(&mut messages).await, Update::Autostart(true)));
     commands.send(Command::Close).unwrap();
     assert!(matches!(next(&mut messages).await, Update::Closed));
     session.await.unwrap();
-    assert_eq!(fixture.state.login_calls.lock().unwrap().len(), 3);
+    assert_eq!(fixture.state.login_calls.lock().unwrap().len(), 6);
+    assert_eq!(&*fixture.state.logout_calls.lock().unwrap(), &["test-user"]);
     assert_eq!(fixture.state.stops.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.state.quits.load(Ordering::SeqCst), 0);
     assert!(!fixture.state.unexpected_disconnect.load(Ordering::SeqCst));
@@ -446,6 +538,7 @@ async fn wrong_certificate_cannot_receive_credentials() {
 #[tokio::test]
 async fn security_key_and_official_gui_handoff_release_the_owned_backend() {
     let fixture = server().await;
+    fixture.state.signed_out.store(true, Ordering::SeqCst);
     let (commands, receiver) = mpsc::unbounded_channel();
     let (updates, mut messages) = mpsc::unbounded_channel();
     let session = tokio::spawn(session::run(
@@ -515,6 +608,10 @@ async fn desktop_startup_releases_frontend_and_leaves_mail_backend_running() {
     )
     .await
     .unwrap();
+    assert_eq!(
+        fixture.state.account_settings_reads.load(Ordering::SeqCst),
+        0
+    );
     assert_eq!(fixture.state.stops.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.state.quits.load(Ordering::SeqCst), 0);
     assert!(fixture.state.login_calls.lock().unwrap().is_empty());

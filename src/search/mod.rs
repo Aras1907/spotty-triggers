@@ -23,7 +23,6 @@ pub mod dictionary;
 pub mod emoji;
 pub mod files;
 pub mod jobs;
-pub mod proton_bridge;
 pub mod run;
 pub mod settings_panels;
 pub mod system;
@@ -449,7 +448,7 @@ fn regular_trigger_sources(
         {
             continue;
         }
-        let runs_commands = matches!(kw.id.as_str(), "run" | "proton-bridge")
+        let runs_commands = kw.id == "run"
             || matches!(
                 crate::triggers::by_id(&kw.id).map(|m| m.action),
                 Some(crate::triggers::TriggerAction::Shell { .. })
@@ -708,10 +707,6 @@ pub fn search_mode(
     }
 
     let rest = query.trim();
-
-    if kw.id == "proton-bridge" {
-        return proton_bridge::search(rest);
-    }
 
     if kw.id == "clipboard" {
         // Clipboard mode not used in worker (it uses Rc<ClipboardHistory> on main).

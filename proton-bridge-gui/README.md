@@ -3,7 +3,7 @@
 This Rust package supplies Spotty's optional login window and embeds Proton
 Bridge 3.27.0 for native Linux x86_64. Spotty links its GUI into the main
 executable and starts a separate process with `--proton-bridge-gui` when the
-Store's **Install** button is clicked. Users need no second installation.
+service's **Settings** button is clicked. Users need no second installation.
 
 The login window uses GTK4 and libadwaita, matching Spotty's native GNOME
 interface and system light/dark preference. Adaptive forms, animated login
@@ -13,18 +13,24 @@ session without stopping Bridge.
 
 ## User flow
 
-1. Click **Install** for Proton Mail Bridge in Spotty's Store.
-2. Bridge starts automatically. Enter your Proton username and account password.
-3. Complete any two-factor, mailbox-password or security-key prompts.
-4. The window shows the generated Bridge password, mail username, local IMAP
-   and SMTP host, ports and encryption settings. Copy these into your mail client.
-5. Optionally enable **Start Bridge at desktop login**, then close the window.
+1. In the Store, find **Server-side installations** and click **Install**
+   for Proton Mail Bridge, or enable it in Search settings. This enables the local mail
+   server service; it adds no search keyword or shortcut.
+2. Click **Settings**. If signed out, enter your Proton account details and
+   complete any two-factor, mailbox-password or security-key prompts.
+3. If already connected, Settings automatically retrieves the generated
+   Bridge password, mail username, IMAP/SMTP host, ports and encryption.
+   Copy them into your new mail client.
+4. Use **Sign out** beside an account to disconnect it. After confirmation,
+   displayed secrets are cleared immediately, and the interface waits for
+   Bridge to confirm sign-out. Use **Sign in** to connect again.
+5. Optionally enable **Start Bridge at desktop login**, then close Settings.
    Bridge keeps running independently of Spotty.
 
-Use `proton settings` to reopen the window and **Saved accounts → Mail settings**
-to retrieve the password again. The generated password is displayed by default
-and can be hidden with the password visibility button. Copying deliberately places it
-on the desktop clipboard, which may be recorded by a clipboard manager.
+Reopen the service's **Settings** button whenever you need mail credentials.
+The generated password is shown by default and can be hidden using its
+visibility button. Copying places it on the desktop clipboard, which a
+clipboard manager may record.
 
 A paid Proton Mail plan and a working unlocked Linux keyring are required.
 Only one frontend can use Bridge's login stream at a time. An occupied stream

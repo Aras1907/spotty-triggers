@@ -62,6 +62,7 @@ struct Window {
     recovery: gtk::Box,
     official: gtk::Button,
     menu_official: gtk::Button,
+    add_account: gtk::Button,
     close: gtk::Button,
     rendered: RefCell<Rendered>,
 }
@@ -147,25 +148,10 @@ impl Window {
             .title_widget(&adw::WindowTitle::new("Proton Mail Bridge", "Spotty"))
             .build();
         toolbar.add_top_bar(&header);
-        let body = gtk::Box::new(gtk::Orientation::Vertical, 24);
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 18);
         for margin in ["margin-start", "margin-end", "margin-top", "margin-bottom"] {
-            body.set_property(margin, 24i32);
+            body.set_property(margin, 18i32);
         }
-        let hero = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        hero.append(
-            &gtk::Image::builder()
-                .icon_name("mail-send-receive-symbolic")
-                .pixel_size(48)
-                .margin_bottom(8)
-                .css_classes(["accent"])
-                .build(),
-        );
-        hero.append(&label("Your Proton mail, connected", "title-1"));
-        hero.append(&label(
-            "Sign in to use Proton Mail with your favourite mail app.",
-            "dim-label",
-        ));
-        body.append(&hero);
         let status_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         status_box.set_halign(gtk::Align::Center);
         let spinner = gtk::Spinner::new();
@@ -197,8 +183,8 @@ impl Window {
             .hhomogeneous(false)
             .build();
         let (login, login_group) = form(
-            "Sign in to Proton",
-            "Use your Proton account details to connect Bridge.",
+            "Sign in",
+            "Connect an account to use it with a mail client.",
         );
         login_group.add(&username);
         login_group.add(&secrets.password);
@@ -265,32 +251,7 @@ impl Window {
         stack.add_named(&security, Some("security"));
 
         let mail = gtk::Box::new(gtk::Orientation::Vertical, 16);
-        let (finished, _) = form(
-            "You're connected",
-            "Copy these settings into your mail app. Bridge stays connected when you close this window.",
-        );
-        finished.append(&mail);
-        let another = gtk::Button::builder()
-            .label("Add another account")
-            .halign(gtk::Align::End)
-            .css_classes(["pill"])
-            .build();
-        {
-            let model = model.clone();
-            let secrets = secrets.clone();
-            let username = username.clone();
-            another.connect_clicked(move |_| {
-                let mut state = model.borrow_mut();
-                state.clear_secrets();
-                state.username.clear();
-                state.mail_settings = None;
-                state.step = Step::Password;
-                username.set_text("");
-                secrets.clear_all();
-            });
-        }
-        finished.append(&another);
-        stack.add_named(&finished, Some("finished"));
+        stack.add_named(&mail, Some("finished"));
         let verification = adw::StatusPage::builder()
             .icon_name("dialog-information-symbolic")
             .title("Continue in Proton Bridge")
@@ -401,6 +362,33 @@ impl Window {
                 }
             });
         }
+        let add_account = gtk::Button::builder()
+            .label("Add account")
+            .css_classes(["flat"])
+            .build();
+        {
+            let model = model.clone();
+            let secrets = secrets.clone();
+            let username = username.clone();
+            let popover = popover.downgrade();
+            add_account.connect_clicked(move |_| {
+                let mut state = model.borrow_mut();
+                if !state.ready || state.busy || state.closing {
+                    return;
+                }
+                state.clear_secrets();
+                state.username.clear();
+                state.mail_settings = None;
+                state.step = Step::Password;
+                state.message = "Sign in to another Proton account.".into();
+                username.set_text("");
+                secrets.clear_all();
+                if let Some(popover) = popover.upgrade() {
+                    popover.popdown();
+                }
+            });
+        }
+        options.append(&add_account);
         options.append(&menu_official);
         let help = gtk::LinkButton::with_label(
             "https://proton.me/support/protonmail-bridge-install",
@@ -469,6 +457,7 @@ impl Window {
             recovery,
             official,
             menu_official,
+            add_account,
             close,
             rendered: RefCell::new(Rendered::default()),
         });
@@ -653,6 +642,7 @@ impl Window {
                 || (!state.ready && state.commands.is_none() && can_recover),
         );
         self.menu_official.set_sensitive(can_recover);
+        self.add_account.set_sensitive(enabled);
         self.close.set_visible(state.step == Step::Finished);
         if state.secrets_revision != rendered.secrets_revision {
             self.secrets.clear_login();
@@ -685,10 +675,11 @@ impl Window {
                     .build();
                 if *status == 2 {
                     let button = gtk::Button::builder()
-                        .label("Mail settings")
+                        .label("Settings")
                         .valign(gtk::Align::Center)
                         .build();
                     let id = id.clone();
+                    let account_id = id.clone();
                     let model = self.model.clone();
                     let secrets = self.secrets.clone();
                     button.connect_clicked(move |_| {
@@ -697,6 +688,54 @@ impl Window {
                         state.clear_secrets();
                         state.busy = true;
                         state.send(Command::ShowAccount(id.clone()));
+                        secrets.clear_all();
+                    });
+                    row.add_suffix(&button);
+                    let logout = gtk::Button::builder()
+                        .label("Sign out")
+                        .valign(gtk::Align::Center)
+                        .css_classes(["flat"])
+                        .build();
+                    let model = self.model.clone();
+                    let secrets = self.secrets.clone();
+                    let parent = self.window.downgrade();
+                    logout.connect_clicked(move |_| {
+                        let Some(parent) = parent.upgrade() else { return };
+                        let dialog = adw::AlertDialog::new(
+                            Some("Sign out of Proton Mail?"),
+                            Some("Mail apps using this account will disconnect. You can sign in again later."),
+                        );
+                        dialog.add_response("cancel", "Cancel");
+                        dialog.add_response("sign-out", "Sign out");
+                        dialog.set_response_appearance("sign-out", adw::ResponseAppearance::Destructive);
+                        dialog.set_default_response(Some("cancel"));
+                        let model = model.clone();
+                        let secrets = secrets.clone();
+                        let account_id = account_id.clone();
+                        glib::MainContext::default().spawn_local(async move {
+                            if dialog.choose_future(&parent).await.as_str() == "sign-out" {
+                                let mut state = model.borrow_mut();
+                                state.logout(account_id);
+                                secrets.clear_all();
+                            }
+                        });
+                    });
+                    row.add_suffix(&logout);
+                } else {
+                    let button = gtk::Button::builder()
+                        .label("Sign in")
+                        .valign(gtk::Align::Center)
+                        .build();
+                    let account_name = name.clone();
+                    let username = self.username.clone();
+                    let model = self.model.clone();
+                    let secrets = self.secrets.clone();
+                    button.connect_clicked(move |_| {
+                        let mut state = model.borrow_mut();
+                        state.username.clone_from(&account_name);
+                        state.mail_settings = None;
+                        state.step = Step::Password;
+                        username.set_text(&account_name);
                         secrets.clear_all();
                     });
                     row.add_suffix(&button);
@@ -719,6 +758,7 @@ impl Window {
             if enabled {
                 match state.step {
                     Step::Password => {
+                        self.username.set_text(&state.username);
                         self.username.grab_focus();
                     }
                     Step::TwoFactor | Step::FactorChoice => {
@@ -783,6 +823,33 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pump() {
+        let context = glib::MainContext::default();
+        for _ in 0..30 {
+            while context.pending() {
+                context.iteration(false);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn button_in(widget: &impl IsA<gtk::Widget>, text: &str) -> Option<gtk::Button> {
+        let widget = widget.as_ref();
+        if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+            if button.label().as_deref() == Some(text) {
+                return Some(button.clone());
+            }
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            if let Some(button) = button_in(&widget, text) {
+                return Some(button);
+            }
+            child = widget.next_sibling();
+        }
+        None
+    }
 
     fn snapshot(ui: &Window, name: &str) {
         let Some(directory) = std::env::var_os("SPOTTY_PROTON_TEST_SCREENSHOTS") else {
@@ -903,7 +970,7 @@ mod tests {
             ui.window.set_default_size(380, 760);
             snapshot(&ui, "mail-settings-narrow");
         }
-        let entry = ui.secrets.generated.borrow().as_ref().unwrap().clone();
+        let mut entry = ui.secrets.generated.borrow().as_ref().unwrap().clone();
         assert_eq!(entry.text(), "GeneratedBridgeSecret");
         assert!(entry.property::<bool>("visibility"));
         assert!(!entry.is_editable());
@@ -921,6 +988,66 @@ mod tests {
             controls.last_child().unwrap().tooltip_text().as_deref(),
             Some("Copy Bridge password")
         );
+
+        ui.window.present();
+        pump();
+        let account_row = ui.rendered.borrow().account_rows[0].clone();
+        let sign_out = button_in(&account_row, "Sign out").unwrap();
+        sign_out.emit_clicked();
+        pump();
+        let dialog = ui.window.visible_dialog().unwrap();
+        button_in(&dialog, "Cancel").unwrap().emit_clicked();
+        pump();
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(entry.text(), "GeneratedBridgeSecret");
+
+        sign_out.emit_clicked();
+        pump();
+        let dialog = ui.window.visible_dialog().unwrap();
+        button_in(&dialog, "Sign out").unwrap().emit_clicked();
+        pump();
+        assert!(matches!(receiver.try_recv().unwrap(), Command::Logout(id) if id == "account-id"));
+        assert!(entry.text().is_empty());
+        assert!(model.borrow().mail_settings.is_none());
+        assert!(model.borrow().busy);
+        updates
+            .send(Update::LoggedOut {
+                accounts: vec![("account-id".into(), "test@proton.me".into(), 0)],
+            })
+            .unwrap();
+        model.borrow_mut().poll();
+        ui.render();
+        assert_eq!(ui.stack.visible_child_name().as_deref(), Some("password"));
+        assert_eq!(ui.username.text(), "test@proton.me");
+        let account_row = ui.rendered.borrow().account_rows[0].clone();
+        ui.username.set_text("another@proton.me");
+        button_in(&account_row, "Sign in").unwrap().emit_clicked();
+        assert_eq!(ui.username.text(), "test@proton.me");
+        ui.secrets.password.set_text("new-account-secret");
+        submit_action(&model, &ui.username, &ui.secrets, LoginMethod::Password)();
+        assert!(ui.secrets.password.text().is_empty());
+        assert!(
+            matches!(receiver.try_recv().unwrap(), Command::Login { username, secret, .. }
+            if username == "test@proton.me" && *secret == "new-account-secret")
+        );
+        updates
+            .send(Update::MailSettings(session::MailSettings {
+                id: "account-id".into(),
+                username: "test@proton.me".into(),
+                addresses: vec!["test@proton.me".into()],
+                password: Zeroizing::new("CurrentBridgeSecret".into()),
+                hostname: "127.0.0.1".into(),
+                imap_port: 1143,
+                smtp_port: 1025,
+                imap_ssl: false,
+                smtp_ssl: true,
+            }))
+            .unwrap();
+        model.borrow_mut().poll();
+        ui.render();
+        entry = ui.secrets.generated.borrow().as_ref().unwrap().clone();
+        assert_eq!(entry.text(), "CurrentBridgeSecret");
+        assert_eq!(ui.stack.visible_child_name().as_deref(), Some("finished"));
 
         // Switching account errors must discard the displayed generated secret.
         updates

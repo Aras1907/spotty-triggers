@@ -15,6 +15,7 @@ pub enum Command {
     },
     Autostart(bool),
     ShowAccount(String),
+    Logout(String),
     Cancel(String),
     Close,
     OpenOfficial,
@@ -51,6 +52,9 @@ pub enum Update {
         autostart: bool,
     },
     MailSettings(MailSettings),
+    LoggedOut {
+        accounts: Vec<(String, String, i32)>,
+    },
     Step(Step),
     Error {
         step: Step,
@@ -129,10 +133,15 @@ fn status_message(status: &tonic::Status) -> String {
     }.into()
 }
 
-pub async fn run(
+pub async fn run(path: PathBuf, commands: mpsc::UnboundedReceiver<Command>, send: impl Fn(Update)) {
+    run_session(path, commands, send, true).await;
+}
+
+async fn run_session(
     path: PathBuf,
     mut commands: mpsc::UnboundedReceiver<Command>,
     send: impl Fn(Update),
+    show_saved_settings: bool,
 ) {
     let mut connection = match Connection::connect(&path).await {
         Ok(connection) => connection,
@@ -195,21 +204,7 @@ pub async fn run(
         Err(_) => {}
     }
     let ready = async {
-        let request = connection.unary(protocol::Empty {});
-        let users = connection
-            .client
-            .get_user_list(request)
-            .await?
-            .into_inner()
-            .users;
-        let accounts = users
-            .into_iter()
-            .map(|mut user| {
-                use zeroize::Zeroize;
-                user.password.zeroize();
-                (user.id, user.username, user.state)
-            })
-            .collect();
+        let accounts = get_accounts(&mut connection).await?;
         let request = connection.unary(protocol::Empty {});
         let autostart = connection
             .client
@@ -221,10 +216,21 @@ pub async fn run(
     }
     .await;
     match ready {
-        Ok((accounts, autostart)) => send(Update::Ready {
-            accounts,
-            autostart,
-        }),
+        Ok((accounts, autostart)) => {
+            let first_connected = accounts
+                .iter()
+                .find(|(_, _, state)| *state == 2)
+                .map(|(id, _, _)| id.clone());
+            send(Update::Ready {
+                accounts,
+                autostart,
+            });
+            // Settings windows are commonly reopened while Bridge is already
+            // connected. Refresh Bridge's generated password on every attach.
+            if let Some(id) = first_connected.filter(|_| show_saved_settings) {
+                show_account(&mut connection, id, &send).await;
+            }
+        }
         Err(status) => {
             send(Update::Error {
                 step: Step::OfficialGui,
@@ -254,6 +260,26 @@ pub async fn run(
                     }
                     Some(Command::ShowAccount(id)) => {
                         show_account(&mut connection, id, &send).await;
+                        Ok(())
+                    }
+                    Some(Command::Logout(id)) => {
+                        let mut request = connection.unary(protocol::StringValue { value: id.clone() });
+                        request.set_timeout(Duration::from_secs(3));
+                        let result = match connection.client.logout_user(request).await {
+                            Ok(_) => wait_for_logout(&mut connection, id).await,
+                            Err(status) => Err(status),
+                        };
+                        match result {
+                            Ok(accounts) => send(Update::LoggedOut { accounts }),
+                            Err(status) => send(Update::Error {
+                                step: Step::Finished,
+                                message: if status.code() == tonic::Code::DeadlineExceeded {
+                                    "Bridge has not finished signing out yet. Wait a moment, then retry.".into()
+                                } else {
+                                    status_message(&status)
+                                },
+                            }),
+                        }
                         Ok(())
                     }
                     Some(Command::Cancel(account)) => {
@@ -309,11 +335,16 @@ pub async fn run(
 /// Initialize saved accounts at desktop login without retaining a GUI stream.
 pub async fn initialize_and_detach(path: PathBuf) {
     let (commands, receiver) = mpsc::unbounded_channel();
-    run(path, receiver, |update| {
-        if matches!(update, Update::Ready { .. } | Update::Error { .. }) {
-            let _ = commands.send(Command::Close);
-        }
-    })
+    run_session(
+        path,
+        receiver,
+        |update| {
+            if matches!(update, Update::Ready { .. } | Update::Error { .. }) {
+                let _ = commands.send(Command::Close);
+            }
+        },
+        false,
+    )
     .await;
 }
 
@@ -324,6 +355,50 @@ async fn abort(connection: &mut Connection, username: String) {
     let _ = connection.client.fido_assertion_abort(request).await;
     let request = connection.unary(protocol::Username { username });
     let _ = connection.client.login_abort(request).await;
+}
+
+async fn get_accounts(
+    connection: &mut Connection,
+) -> Result<Vec<(String, String, i32)>, tonic::Status> {
+    let request = connection.unary(protocol::Empty {});
+    let users = connection
+        .client
+        .get_user_list(request)
+        .await?
+        .into_inner()
+        .users;
+    Ok(users
+        .into_iter()
+        .map(|mut user| {
+            use zeroize::Zeroize;
+            user.password.zeroize();
+            (user.id, user.username, user.state)
+        })
+        .collect())
+}
+
+// LogoutUser starts sign-out in a goroutine and may return before Bridge updates
+// its account list. Only tell the GUI logout succeeded after the target account
+// disappears or Bridge reports it as signed out.
+async fn wait_for_logout(
+    connection: &mut Connection,
+    id: String,
+) -> Result<Vec<(String, String, i32)>, tonic::Status> {
+    tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            let accounts = get_accounts(connection).await?;
+            if accounts
+                .iter()
+                .find(|(account_id, _, _)| account_id == &id)
+                .map_or(true, |(_, _, state)| *state == 0)
+            {
+                return Ok(accounts);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .map_err(|_| tonic::Status::deadline_exceeded("logout state is still pending"))?
 }
 
 async fn dispatch(
