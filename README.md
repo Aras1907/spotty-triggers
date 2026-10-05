@@ -70,6 +70,9 @@ Proton's Linux x86_64 Bridge runtime together. Installing the trigger opens
 the window and automatically starts Bridge when needed. No separate Bridge
 package, helper installation, root access or Flatpak build is required.
 
+The login and mail-settings interface uses GTK4 and libadwaita, matching
+Spotty's system theme, with animated login steps and native account cards.
+
 Enter your Proton username and account password. The window requests a
 two-factor code, separate mailbox password or security-key PIN when needed.
 After sign-in it shows the **generated Bridge password**, mail username,
@@ -79,7 +82,7 @@ client. Never enter account credentials in Spotty's search bar.
 Type `proton` and select its row, or use `proton login` / `proton settings`,
 to reopen the window. **Saved accounts → Mail settings** retrieves the
 password again. **Close and keep Bridge running** leaves mail connected;
-**Open Bridge at desktop login** controls automatic reconnection. Removing
+**Start Bridge at desktop login** controls automatic reconnection. Removing
 the trigger does not stop Bridge or remove its saved account.
 
 A paid Proton Mail plan and an unlocked Linux keyring are required. If another

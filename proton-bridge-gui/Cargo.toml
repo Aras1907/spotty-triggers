@@ -14,7 +14,9 @@ flate2 = "1"
 tar = "0.4"
 tempfile = "3"
 base64 = "0.22"
-eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+gtk = { version = "0.9", package = "gtk4", features = ["v4_12"] }
+adw = { version = "0.7", package = "libadwaita", features = ["v1_6"] }
+glib = "0.20"
 hyper-util = { version = "0.1", features = ["tokio"] }
 libc = "0.2"
 prost = "0.14"

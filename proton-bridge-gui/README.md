@@ -5,6 +5,12 @@ Bridge 3.27.0 for native Linux x86_64. Spotty links its GUI into the main
 executable and starts a separate process with `--proton-bridge-gui` when the
 Store's **Install** button is clicked. Users need no second installation.
 
+The login window uses GTK4 and libadwaita, matching Spotty's native GNOME
+interface and system light/dark preference. Adaptive forms, animated login
+steps, saved-account cards, copy buttons and a password visibility control
+cover sign-in and mail-client setup. Closing the window detaches its local
+session without stopping Bridge.
+
 ## User flow
 
 1. Click **Install** for Proton Mail Bridge in Spotty's Store.
@@ -12,12 +18,12 @@ Store's **Install** button is clicked. Users need no second installation.
 3. Complete any two-factor, mailbox-password or security-key prompts.
 4. The window shows the generated Bridge password, mail username, local IMAP
    and SMTP host, ports and encryption settings. Copy these into your mail client.
-5. Optionally enable **Open Bridge at desktop login**, then close the window.
+5. Optionally enable **Start Bridge at desktop login**, then close the window.
    Bridge keeps running independently of Spotty.
 
 Use `proton settings` to reopen the window and **Saved accounts → Mail settings**
 to retrieve the password again. The generated password is displayed by default
-and can be hidden with **Show Bridge password**. Copying deliberately places it
+and can be hidden with the password visibility button. Copying deliberately places it
 on the desktop clipboard, which may be recorded by a clipboard manager.
 
 A paid Proton Mail plan and a working unlocked Linux keyring are required.
@@ -32,6 +38,8 @@ The default `bundled-bridge` feature embeds the official Linux x86_64 runtime
 and its corresponding source archive. Cargo's build script uses Python 3's
 standard library to fetch the pinned release and checks committed SHA-256
 hashes before accepting either download. Outputs stay in Cargo's build folder.
+GTK4 4.12+ and libadwaita 1.6+ are shared with Spotty. Standalone compilation
+needs their development packages, in addition to Python 3 and a C toolchain.
 The binary requires no download at user installation time. Its first activation
 extracts the runtime into the user's private Spotty data folder, atomically,
 without a package manager or system-wide writes. The bundle also supplies the FIDO2/CBOR libraries needed by the native backend,
