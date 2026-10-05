@@ -1,22 +1,50 @@
-# Spotty Proton Mail Bridge login window
+# Packaged Proton Mail Bridge
 
-An optional native Rust companion launched by Spotty's `proton login` or
-`proton gui` trigger. All source, Cargo builds, and checks can stay in this
-repository. Embedding the window in Spotty's settings would also require
-changes in the main Spotty application.
+This Rust package supplies Spotty's optional login window and embeds Proton
+Bridge 3.27.0 for native Linux x86_64. Spotty links its GUI into the main
+executable and starts a separate process with `--proton-bridge-gui` when the
+Store's **Install** button is clicked. Users need no second installation.
 
-## Install
+## User flow
 
-Requires Linux, a graphical X11 or Wayland session, Rust, and the native
-`protonmail-bridge` executable. Install Bridge using
-[Proton's guide](https://proton.me/support/protonmail-bridge-install).
-Bridge also needs a paid Proton plan that includes Mail and a working keyring.
+1. Click **Install** for Proton Mail Bridge in Spotty's Store.
+2. Bridge starts automatically. Enter your Proton username and account password.
+3. Complete any two-factor, mailbox-password or security-key prompts.
+4. The window shows the generated Bridge password, mail username, local IMAP
+   and SMTP host, ports and encryption settings. Copy these into your mail client.
+5. Optionally enable **Open Bridge at desktop login**, then close the window.
+   Bridge keeps running independently of Spotty.
 
-```sh
-cargo install --path proton-bridge-gui --locked
-```
+Use `proton settings` to reopen the window and **Saved accounts → Mail settings**
+to retrieve the password again. The generated password is displayed by default
+and can be hidden with **Show Bridge password**. Copying deliberately places it
+on the desktop clipboard, which may be recorded by a clipboard manager.
 
-For a build and installation entirely inside this checkout:
+A paid Proton Mail plan and a working unlocked Linux keyring are required.
+Only one frontend can use Bridge's login stream at a time. An occupied stream
+is never stopped or replaced. Human verification and keyring setup can use
+**Open official Bridge window**, which launches the included Qt GUI. This
+handoff briefly restarts a headless Bridge. Normal closure keeps it running.
+
+## Native Cargo packaging
+
+The default `bundled-bridge` feature embeds the official Linux x86_64 runtime
+and its corresponding source archive. Cargo's build script uses Python 3's
+standard library to fetch the pinned release and checks committed SHA-256
+hashes before accepting either download. Outputs stay in Cargo's build folder.
+The binary requires no download at user installation time. Its first activation
+extracts the runtime into the user's private Spotty data folder, atomically,
+without a package manager or system-wide writes. The bundle also supplies the FIDO2/CBOR libraries needed by the native backend,
+with their pinned hashes, source archives and licence notices. These libraries
+are used only by the packaged Bridge process. The included Qt fallback adds
+package size but is not loaded by the Rust login window.
+
+An existing `protonmail-bridge` on PATH is preferred. For a custom native layout,
+`SPOTTY_PROTON_BRIDGE_BACKEND` may identify an absolute backend path. The backend
+runs with `--grpc` and the original launcher path for updates and autostart;
+no credentials or parent-lifetime flag are passed as arguments.
+
+For standalone development inside this checkout:
 
 ```sh
 CARGO_HOME="$PWD/.cargo-proton" cargo install --path proton-bridge-gui \
@@ -24,62 +52,34 @@ CARGO_HOME="$PWD/.cargo-proton" cargo install --path proton-bridge-gui \
 ./build/proton-bridge-gui/bin/spotty-proton-bridge-gui
 ```
 
-Put the resulting `bin` directory on the `PATH` used to start Spotty to have
-the trigger discover this local installation. The ordinary Cargo install is
-also discovered in `~/.cargo/bin`. No Flatpak build is used.
+Use `--no-default-features` to build a window for an existing native Bridge,
+without bundling the x86_64 payload. The `SPOTTY_PROTON_BUNDLE_CACHE` build
+variable can point to an absolute folder containing `bridge.deb` and
+`source.tar.gz`; their hashes are still checked. Do not use Flatpak.
 
-## Sign in
+## Credentials and protocol
 
-1. Install the Proton Mail Bridge trigger from Spotty's Store, then type
-   `proton login` and press Enter.
-2. If Bridge is stopped, select **Start Bridge**. This starts its local backend
-   without the official GUI, then connects the companion.
-3. Enter your email/username and account password, then select **Sign in**.
-4. Enter the authenticator code, separate mailbox password, or security-key
-   PIN when Bridge requests it. Security-key touch prompts are also shown.
-5. Enable **Open Bridge at desktop login** if desired. Choose
-   **Close and keep Bridge running** when finished.
+Credentials travel to the local Unix socket or loopback TCP endpoint over TLS
+pinned to Bridge's own certificate and authenticated with its local token.
+The form never calls Proton's cloud API directly. Login fields are masked and
+cleared after submission, errors, cancellation and closure. Bridge manages
+saved login in its vault and Linux keyring. Mail-client passwords are retrieved
+only for connected accounts, held in zeroizing app-owned buffers and discarded
+on account changes and closure. Desktop startup initializes the saved accounts without a window, then detaches
+the login stream so it remains available for the next settings window.
 
-Saved account names and connection states appear above the form. To configure
-Thunderbird or another mail client, select **Open official Bridge window**
-and use the local IMAP/SMTP settings and Bridge-generated password there.
+No passwords are logged, passed through shell
+commands or written by this window. GUI/transport libraries can retain transient
+copies, so this is not a process-wide secure-memory guarantee.
 
-The official GUI and this companion cannot own Bridge's event stream at the
-same time. An occupied stream produces a clear message and is never stopped
-or replaced. Choose **Quit Bridge** in the official GUI first if you want to
-use this form. Human verification and keyring setup use the official GUI.
-Opening it from an active companion briefly restarts the headless Bridge;
-closing the companion normally preserves the running backend.
+The wire protocol is pinned to [upstream Bridge 3.27.0](https://github.com/ProtonMail/proton-bridge/blob/v3.27.0/internal/frontend/grpc/bridge.proto).
+Its `User.password` is already the mail-client password: it must **not** be
+base64-decoded or replaced with the Proton account password. TLS mock-server
+tests exercise multi-stage login, generated credentials and mail settings,
+locked accounts, startup controls, occupied frontends and graceful disconnect.
+A real Proton account is needed to validate actual cloud authentication.
 
-**Start Bridge** finds the packaged `bridge` backend beside the resolved
-`protonmail-bridge` launcher. For a custom installation with a wrapper script
-or a different layout, set `SPOTTY_PROTON_BRIDGE_BACKEND` to the backend's
-absolute path before starting the companion. The backend is launched with
-`--grpc` and the original launcher path for updates and autostart; no
-credentials or parent-lifetime flag are passed as process arguments.
-
-## Credential handling and compatibility
-
-The form sends credentials over authenticated TLS to Bridge's local Unix
-socket (or its loopback-only TCP port). It verifies Bridge's own certificate
-and supplies the local server token. It never calls Proton's cloud API
-directly, places credentials in command arguments, logs them, or saves form
-values. Secret fields are masked and app-owned buffers are cleared after
-submission, errors, cancellation, and closure. Transport and GUI libraries
-may retain transient memory copies; this is not a process-wide secure-memory
-guarantee. Bridge manages persistent login and credentials using its vault
-and Linux keyring.
-
-The client targets the current Bridge 3.x
-[local gRPC protocol](https://github.com/ProtonMail/proton-bridge/blob/master/internal/frontend/grpc/bridge.proto).
-This is an internal interface and future Bridge releases may change it. The
-mock-server checks cover the actual TLS transport and login sequence; a real
-account login and a live desktop session are still needed for end-to-end
-validation. The companion does not read mail content, and it does not decode
-or display the Bridge-generated mail-client passwords included in account
-responses.
-
-## Check
+## Checks
 
 ```sh
 CARGO_HOME="$PWD/.cargo-proton" cargo test --manifest-path proton-bridge-gui/Cargo.toml --locked

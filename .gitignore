@@ -1,3 +1,5 @@
 /.cargo-proton/
 /build/
+/.integration/
 /proton-bridge-gui/target/
+/proton-bridge-gui/__pycache__/

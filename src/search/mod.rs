@@ -23,6 +23,7 @@ pub mod dictionary;
 pub mod emoji;
 pub mod files;
 pub mod jobs;
+pub mod proton_bridge;
 pub mod run;
 pub mod settings_panels;
 pub mod system;
@@ -707,6 +708,10 @@ pub fn search_mode(
     }
 
     let rest = query.trim();
+
+    if kw.id == "proton-bridge" {
+        return proton_bridge::search(rest);
+    }
 
     if kw.id == "clipboard" {
         // Clipboard mode not used in worker (it uses Rc<ClipboardHistory> on main).

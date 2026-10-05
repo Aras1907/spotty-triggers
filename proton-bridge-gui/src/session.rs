@@ -14,6 +14,7 @@ pub enum Command {
         secret: Zeroizing<String>,
     },
     Autostart(bool),
+    ShowAccount(String),
     Cancel(String),
     Close,
     OpenOfficial,
@@ -32,11 +33,24 @@ pub enum Step {
     OfficialGui,
 }
 
+pub struct MailSettings {
+    pub id: String,
+    pub username: String,
+    pub addresses: Vec<String>,
+    pub password: Zeroizing<String>,
+    pub hostname: String,
+    pub imap_port: i32,
+    pub smtp_port: i32,
+    pub imap_ssl: bool,
+    pub smtp_ssl: bool,
+}
+
 pub enum Update {
     Ready {
-        accounts: Vec<(String, i32)>,
+        accounts: Vec<(String, String, i32)>,
         autostart: bool,
     },
+    MailSettings(MailSettings),
     Step(Step),
     Error {
         step: Step,
@@ -44,6 +58,7 @@ pub enum Update {
     },
     Autostart(bool),
     Closed,
+    ConnectionEstablished,
 }
 
 pub fn login_update(event: login_event::Event) -> Update {
@@ -130,6 +145,7 @@ pub async fn run(
             return;
         }
     };
+    send(Update::ConnectionEstablished);
     // Release Bridge's initialization gate before waiting for streamed events.
     // This call is idempotent and does not take over an existing frontend.
     let request = connection.unary(protocol::Empty {});
@@ -175,7 +191,7 @@ pub async fn run(
             send(Update::Closed);
             return;
         }
-        Ok(Ok(Some(event))) => dispatch(event, &send),
+        Ok(Ok(Some(event))) => dispatch(&mut connection, event, &send).await,
         Err(_) => {}
     }
     let ready = async {
@@ -186,6 +202,14 @@ pub async fn run(
             .await?
             .into_inner()
             .users;
+        let accounts = users
+            .into_iter()
+            .map(|mut user| {
+                use zeroize::Zeroize;
+                user.password.zeroize();
+                (user.id, user.username, user.state)
+            })
+            .collect();
         let request = connection.unary(protocol::Empty {});
         let autostart = connection
             .client
@@ -193,13 +217,7 @@ pub async fn run(
             .await?
             .into_inner()
             .value;
-        Ok::<_, tonic::Status>((
-            users
-                .into_iter()
-                .map(|user| (user.username, user.state))
-                .collect(),
-            autostart,
-        ))
+        Ok::<_, tonic::Status>((accounts, autostart))
     }
     .await;
     match ready {
@@ -233,6 +251,10 @@ pub async fn run(
                         connection.client.set_is_autostart_on(request).await.map(|_| {
                             send(Update::Autostart(value));
                         })
+                    }
+                    Some(Command::ShowAccount(id)) => {
+                        show_account(&mut connection, id, &send).await;
+                        Ok(())
                     }
                     Some(Command::Cancel(account)) => {
                         abort(&mut connection, account).await;
@@ -270,7 +292,7 @@ pub async fn run(
                         if matches!(event.event.as_ref(), Some(stream_event::Event::Login(login)) if matches!(login.event, Some(login_event::Event::Finished(_)) | Some(login_event::Event::AlreadyLoggedIn(_)))) {
                             username.clear();
                         }
-                        dispatch(event, &send);
+                        dispatch(&mut connection, event, &send).await;
                     }
                     Ok(None) | Err(_) => {
                         send(Update::Error { step: Step::OfficialGui, message: "Bridge disconnected. Reconnect to continue.".into() });
@@ -284,6 +306,17 @@ pub async fn run(
     send(Update::Closed);
 }
 
+/// Initialize saved accounts at desktop login without retaining a GUI stream.
+pub async fn initialize_and_detach(path: PathBuf) {
+    let (commands, receiver) = mpsc::unbounded_channel();
+    run(path, receiver, |update| {
+        if matches!(update, Update::Ready { .. } | Update::Error { .. }) {
+            let _ = commands.send(Command::Close);
+        }
+    })
+    .await;
+}
+
 async fn abort(connection: &mut Connection, username: String) {
     let request = connection.unary(protocol::Username {
         username: username.clone(),
@@ -293,15 +326,77 @@ async fn abort(connection: &mut Connection, username: String) {
     let _ = connection.client.login_abort(request).await;
 }
 
-fn dispatch(event: protocol::StreamEvent, send: &impl Fn(Update)) {
+async fn dispatch(
+    connection: &mut Connection,
+    event: protocol::StreamEvent,
+    send: &impl Fn(Update),
+) {
     match event.event {
         Some(stream_event::Event::Login(login)) => {
-            if let Some(event) = login.event { send(login_update(event)); }
+            if let Some(event) = login.event {
+                let id = match &event {
+                    login_event::Event::Finished(user) | login_event::Event::AlreadyLoggedIn(user) => Some(user.user_id.clone()),
+                    _ => None,
+                };
+                send(login_update(event));
+                if let Some(id) = id { show_account(connection, id, send).await; }
+            }
         }
         Some(stream_event::Event::Keychain(keychain)) if keychain.event.is_some() => send(Update::Error {
             step: Step::OfficialGui,
             message: "Bridge needs a working Linux keyring. Unlock or configure it in the official Bridge window.".into(),
         }),
         _ => {}
+    }
+}
+
+async fn show_account(connection: &mut Connection, id: String, send: &impl Fn(Update)) {
+    let result = async {
+        let request = connection.unary(protocol::StringValue { value: id });
+        let mut user = connection.client.get_user(request).await?.into_inner();
+        // Only connected accounts may expose their generated mail-client secret.
+        let bytes = Zeroizing::new(std::mem::take(&mut user.password));
+        if user.state != 2 || bytes.is_empty() {
+            return Err(tonic::Status::failed_precondition(
+                "Account is not connected",
+            ));
+        }
+        let password = Zeroizing::new(
+            std::str::from_utf8(&bytes)
+                .map(str::to_owned)
+                .map_err(|_| tonic::Status::internal("Invalid Bridge password"))?,
+        );
+        let request = connection.unary(protocol::Empty {});
+        let hostname = connection
+            .client
+            .hostname(request)
+            .await?
+            .into_inner()
+            .value;
+        let request = connection.unary(protocol::Empty {});
+        let settings = connection
+            .client
+            .mail_server_settings(request)
+            .await?
+            .into_inner();
+        Ok::<_, tonic::Status>(MailSettings {
+            id: user.id,
+            username: user.username,
+            addresses: user.addresses,
+            password,
+            hostname,
+            imap_port: settings.imap_port,
+            smtp_port: settings.smtp_port,
+            imap_ssl: settings.use_ssl_for_imap,
+            smtp_ssl: settings.use_ssl_for_smtp,
+        })
+    }
+    .await;
+    match result {
+        Ok(settings) => send(Update::MailSettings(settings)),
+        Err(_) => send(Update::Error {
+            step: Step::Finished,
+            message: "Cannot read this account's mail-client settings. Reopen its settings after signing in, or use the official Bridge window.".into(),
+        }),
     }
 }

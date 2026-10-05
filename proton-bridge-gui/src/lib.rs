@@ -1,3 +1,5 @@
+pub mod bundle;
+pub mod gui;
 pub mod launch;
 pub mod rpc;
 pub mod session;

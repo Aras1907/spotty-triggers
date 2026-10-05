@@ -5,7 +5,14 @@ edition = "2024"
 publish = false
 description = "Optional native Proton Mail Bridge login window for Spotty"
 
+[features]
+default = ["bundled-bridge"]
+bundled-bridge = []
+
 [dependencies]
+flate2 = "1"
+tar = "0.4"
+tempfile = "3"
 base64 = "0.22"
 eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

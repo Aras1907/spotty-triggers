@@ -1,0 +1,38 @@
+[
+  {
+    "name": "libfido2-1_1.15.0-1+b1_amd64.deb",
+    "url": "https://deb.debian.org/debian/pool/main/libf/libfido2/libfido2-1_1.15.0-1+b1_amd64.deb",
+    "sha256": "094fc0fe20c652be848ab2a8b3793eb03bc4327140ebd232145356352004e6c0",
+    "kind": "deb"
+  },
+  {
+    "name": "libfido2_1.15.0.orig.tar.gz",
+    "url": "https://deb.debian.org/debian/pool/main/libf/libfido2/libfido2_1.15.0.orig.tar.gz",
+    "sha256": "abaab1318d21d262ece416fb8a7132fa9374bda89f6fa52b86a98a2f5712b61e",
+    "kind": "source"
+  },
+  {
+    "name": "libfido2_1.15.0-1.debian.tar.xz",
+    "url": "https://deb.debian.org/debian/pool/main/libf/libfido2/libfido2_1.15.0-1.debian.tar.xz",
+    "sha256": "4c20c21cffd478556f2fd2ab1ab529fd75bc1fc499f0851a45af91f78c3b4626",
+    "kind": "source"
+  },
+  {
+    "name": "libcbor0.10_0.10.2-2_amd64.deb",
+    "url": "https://deb.debian.org/debian/pool/main/libc/libcbor/libcbor0.10_0.10.2-2_amd64.deb",
+    "sha256": "2457686e375dcb7567ba01da6638a0711e2a55725d084d65de44dd11bb1f52e2",
+    "kind": "deb"
+  },
+  {
+    "name": "libcbor_0.10.2.orig.tar.gz",
+    "url": "https://deb.debian.org/debian/pool/main/libc/libcbor/libcbor_0.10.2.orig.tar.gz",
+    "sha256": "e75f712215d7b7e5c89ef322a09b701f7159f028b8b48978865725f00f79875b",
+    "kind": "source"
+  },
+  {
+    "name": "libcbor_0.10.2-2.debian.tar.xz",
+    "url": "https://deb.debian.org/debian/pool/main/libc/libcbor/libcbor_0.10.2-2.debian.tar.xz",
+    "sha256": "85c84ec8bafc8369fddb183ddb4c173cb23b1fc5f57bdd94e2763c4bdbccc6ad",
+    "kind": "source"
+  }
+]

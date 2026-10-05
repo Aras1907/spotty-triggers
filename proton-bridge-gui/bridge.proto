@@ -8,6 +8,9 @@ service Bridge {
   rpc Quit(Empty) returns (Empty);
   rpc GuiReady(Empty) returns (Empty);
   rpc GetUserList(Empty) returns (UserList);
+  rpc GetUser(StringValue) returns (User);
+  rpc Hostname(Empty) returns (StringValue);
+  rpc MailServerSettings(Empty) returns (ImapSmtpSettings);
   rpc Login(LoginRequest) returns (Empty);
   rpc Login2FA(LoginRequest) returns (Empty);
   rpc Login2Passwords(LoginRequest) returns (Empty);
@@ -21,6 +24,13 @@ service Bridge {
 }
 message Empty {}
 message Boolean { bool value = 1; }
+message StringValue { string value = 1; }
+message ImapSmtpSettings {
+  int32 imapPort = 1;
+  int32 smtpPort = 2;
+  bool useSSLForImap = 3;
+  bool useSSLForSmtp = 4;
+}
 message Username { string username = 1; }
 message LoginRequest {
   string username = 1;
@@ -63,5 +73,6 @@ message User {
   string id = 1;
   string username = 2;
   int32 state = 4; // 0: signed out; 1: locked; 2: connected.
-  // Deliberately do not decode the Bridge-generated password (field 8).
+  bytes password = 8; // Already formatted by Bridge; do not base64-decode.
+  repeated string addresses = 9;
 }

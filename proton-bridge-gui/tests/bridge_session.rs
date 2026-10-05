@@ -29,6 +29,7 @@ struct State {
     events: Mutex<Option<Events>>,
     login_calls: Mutex<Vec<(String, String)>>,
     startup: AtomicBool,
+    locked_account: AtomicBool,
     normal_end: AtomicBool,
     unexpected_disconnect: AtomicBool,
     stops: AtomicUsize,
@@ -120,6 +121,45 @@ impl Bridge for Mock {
     ) -> Result<Response<p::UserList>, Status> {
         authenticate(&request)?;
         Ok(Response::new(p::UserList { users: vec![] }))
+    }
+    async fn get_user(
+        &self,
+        request: Request<p::StringValue>,
+    ) -> Result<Response<p::User>, Status> {
+        authenticate(&request)?;
+        assert_eq!(request.into_inner().value, "test-user");
+        Ok(Response::new(p::User {
+            id: "test-user".into(),
+            username: "test@proton.me".into(),
+            state: if self.0.locked_account.load(Ordering::SeqCst) {
+                1
+            } else {
+                2
+            },
+            password: b"BridgePasswordAbC123".to_vec(),
+            addresses: vec!["test@proton.me".into()],
+        }))
+    }
+    async fn hostname(
+        &self,
+        request: Request<p::Empty>,
+    ) -> Result<Response<p::StringValue>, Status> {
+        authenticate(&request)?;
+        Ok(Response::new(p::StringValue {
+            value: "127.0.0.1".into(),
+        }))
+    }
+    async fn mail_server_settings(
+        &self,
+        request: Request<p::Empty>,
+    ) -> Result<Response<p::ImapSmtpSettings>, Status> {
+        authenticate(&request)?;
+        Ok(Response::new(p::ImapSmtpSettings {
+            imap_port: 1143,
+            smtp_port: 1025,
+            use_ssl_for_imap: false,
+            use_ssl_for_smtp: true,
+        }))
     }
     async fn login(&self, request: Request<p::LoginRequest>) -> Result<Response<p::Empty>, Status> {
         self.login(
@@ -283,10 +323,15 @@ async fn server() -> ServerFixture {
 }
 
 async fn next(updates: &mut mpsc::UnboundedReceiver<Update>) -> Update {
-    tokio::time::timeout(Duration::from_secs(5), updates.recv())
-        .await
-        .unwrap()
-        .unwrap()
+    loop {
+        let update = tokio::time::timeout(Duration::from_secs(5), updates.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if !matches!(update, Update::ConnectionEstablished) {
+            return update;
+        }
+    }
 }
 
 #[tokio::test]
@@ -326,6 +371,29 @@ async fn login_challenges_startup_and_close_use_verified_local_transport() {
             .unwrap();
         assert!(matches!(next(&mut messages).await, Update::Step(step) if step == expected));
     }
+    match next(&mut messages).await {
+        Update::MailSettings(settings) => {
+            assert_eq!(*settings.password, "BridgePasswordAbC123");
+            assert_ne!(*settings.password, "password-example");
+            assert_eq!(settings.addresses, ["test@proton.me"]);
+            assert_eq!(settings.hostname, "127.0.0.1");
+            assert_eq!((settings.imap_port, settings.smtp_port), (1143, 1025));
+            assert!(!settings.imap_ssl);
+            assert!(settings.smtp_ssl);
+        }
+        _ => panic!("Missing Bridge-generated credentials after login"),
+    }
+    // Reopening an existing account retrieves its generated password again.
+    commands
+        .send(Command::ShowAccount("test-user".into()))
+        .unwrap();
+    assert!(matches!(next(&mut messages).await, Update::MailSettings(_)));
+    // Locked/signed-out accounts must never display a cached mail secret.
+    fixture.state.locked_account.store(true, Ordering::SeqCst);
+    commands
+        .send(Command::ShowAccount("test-user".into()))
+        .unwrap();
+    assert!(matches!(next(&mut messages).await, Update::Error { .. }));
     commands.send(Command::Autostart(true)).unwrap();
     assert!(matches!(next(&mut messages).await, Update::Autostart(true)));
     commands.send(Command::Close).unwrap();
@@ -436,4 +504,30 @@ fn retries_stay_on_correct_challenge_and_sensitive_server_messages_are_not_shown
             ..
         }
     ));
+}
+
+#[tokio::test]
+async fn desktop_startup_releases_frontend_and_leaves_mail_backend_running() {
+    let fixture = server().await;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        session::initialize_and_detach(fixture.path.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(fixture.state.stops.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.state.quits.load(Ordering::SeqCst), 0);
+    assert!(fixture.state.login_calls.lock().unwrap().is_empty());
+    assert!(!fixture.state.unexpected_disconnect.load(Ordering::SeqCst));
+    // The next login window can acquire a fresh session and detach normally.
+    let (commands, receiver) = mpsc::unbounded_channel();
+    commands.send(Command::Close).unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        session::run(fixture.path.clone(), receiver, |_| {}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(fixture.state.stops.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.state.quits.load(Ordering::SeqCst), 0);
 }

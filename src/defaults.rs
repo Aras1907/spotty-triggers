@@ -11,6 +11,9 @@ static CATALOG: LazyLock<Vec<RepoTrigger>> = LazyLock::new(|| {
 });
 
 pub fn supports_native(id: &str) -> bool {
+    if id == "proton-bridge" && !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return false;
+    }
     CATALOG.iter().any(|entry| entry.native && entry.id == id)
 }
 
@@ -62,6 +65,7 @@ pub fn display_name(id: &str) -> &'static str {
             "run" => "Cmd",
             "emoji" => "Emoji",
             "music" => "Music",
+            "proton-bridge" => "Proton Mail Bridge",
             "translate" => "Translate",
             "apps" => "Apps",
             "newapps" => "New Apps",

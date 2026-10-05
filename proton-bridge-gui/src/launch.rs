@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 pub struct BackendLaunch {
     pub executable: PathBuf,
     pub arguments: Vec<OsString>,
+    pub launcher: PathBuf,
 }
 
 fn executable(path: &Path) -> bool {
@@ -12,17 +13,21 @@ fn executable(path: &Path) -> bool {
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
-pub fn backend_launch() -> Result<BackendLaunch, String> {
-    let launcher = std::env::var_os("PATH")
+pub fn official_launcher() -> Result<PathBuf, String> {
+    let installed = std::env::var_os("PATH")
         .into_iter()
         .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
         .map(|directory| directory.join("protonmail-bridge"))
-        .find(|path| executable(path))
-        .ok_or(
-            "Install Proton's native Linux package and make sure protonmail-bridge is on PATH.",
-        )?;
+        .find(|path| executable(path));
+    if let Some(launcher) = installed {
+        return Ok(launcher);
+    }
+    crate::bundle::launcher()
+}
+
+pub fn backend_launch() -> Result<BackendLaunch, String> {
     backend_beside(
-        &launcher,
+        &official_launcher()?,
         std::env::var_os("SPOTTY_PROTON_BRIDGE_BACKEND").map(PathBuf::from),
     )
 }
@@ -51,10 +56,11 @@ fn backend_beside(
     }
     Ok(BackendLaunch {
         executable: backend,
+        launcher: launcher.clone(),
         arguments: vec![
             "--grpc".into(),
             "--launcher".into(),
-            launcher.into_os_string(),
+            crate::bundle::autostart_launcher(&launcher).into_os_string(),
         ],
     })
 }

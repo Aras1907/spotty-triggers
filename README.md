@@ -45,7 +45,7 @@ a vulnerability.
 | [`triggers/updates.json`](triggers/updates.json) | Install from Store | Check and install updates |
 | [`triggers/dictionary.json`](triggers/dictionary.json) | `dict` | Look up a word definition |
 | [`triggers/translate.json`](triggers/translate.json) | `translate` | Translate text locally — detects the language, targets your system language |
-| [`triggers/proton-bridge.json`](triggers/proton-bridge.json) | `proton` (optional Store install) | Open Proton Mail Bridge to sign in and keep mail connected in the background |
+| [`triggers/proton-bridge.json`](triggers/proton-bridge.json) | `proton` (optional Store install) | Packaged login window, Bridge password and local IMAP/SMTP settings |
 
 The six native result providers start uninstalled. Install one from the Store
 to add it to regular search. Then set an optional word or shortcut in Spotty
@@ -63,54 +63,41 @@ Management is a core backend and cannot be removed.
 
 ## Proton Mail Bridge (optional)
 
-In **Settings → Triggers → Store**, install **Proton Mail Bridge**. It starts
-uninstalled and uses the existing shell trigger support, so adding it to a
-Cargo-installed Spotty does not require a rebuild. You can also import
-[`triggers/proton-bridge.json`](triggers/proton-bridge.json). Spotty shows the
-shell command for approval when you install the trigger.
+In **Settings → Triggers → Store**, click **Install** beside **Proton Mail
+Bridge**. It is optional and starts uninstalled. Current native Cargo builds
+of [Spotty](https://github.com/Aras1907/Spotty) package the login window and
+Proton's Linux x86_64 Bridge runtime together. Installing the trigger opens
+the window and automatically starts Bridge when needed. No separate Bridge
+package, helper installation, root access or Flatpak build is required.
 
-Install the native Linux `protonmail-bridge` package separately using
-[Proton's installation guide](https://proton.me/support/protonmail-bridge-install).
-Bridge requires a paid Proton plan that includes Mail and a working Linux
-keyring, such as GNOME Keyring. The trigger opens the guide if the executable
-is missing from `PATH`; it does not install packages automatically or use
-Flatpak.
+Enter your Proton username and account password. The window requests a
+two-factor code, separate mailbox password or security-key PIN when needed.
+After sign-in it shows the **generated Bridge password**, mail username,
+local IMAP/SMTP host and ports, and TLS settings. Copy those into your mail
+client. Never enter account credentials in Spotty's search bar.
 
-| Command | Action |
-|---|---|
-| `proton login` or `proton gui` | Open the optional Spotty login window; fall back to the official Bridge GUI if it is not installed |
-| `proton open` | Open the official Bridge GUI to manage accounts and mail-client settings |
-| `proton start` | Launch Bridge without showing its window, using the saved login |
-| `proton install` | Open Proton's official installation guide |
-| `proton help` | Show command help inside Spotty |
+Type `proton` and select its row, or use `proton login` / `proton settings`,
+to reopen the window. **Saved accounts → Mail settings** retrieves the
+password again. **Close and keep Bridge running** leaves mail connected;
+**Open Bridge at desktop login** controls automatic reconnection. Removing
+the trigger does not stop Bridge or remove its saved account.
 
-The optional native [login companion](proton-bridge-gui/README.md) adds GUI
-fields for your username, account password, two-factor code, separate mailbox
-password, and security-key PIN. It also shows saved accounts and a switch for
-opening Bridge at desktop login. Install it using Cargo:
+A paid Proton Mail plan and an unlocked Linux keyring are required. If another
+Bridge frontend is already active, finish there or quit it before opening
+Spotty's login window. Human verification can use the included official GUI.
 
-```sh
-cargo install --path proton-bridge-gui --locked
-```
+The pinned runtime is downloaded and SHA-256 verified **during the Cargo
+build**, then embedded in the package. It is unpacked into
+`$XDG_DATA_HOME/spotty/proton-bridge/` (normally
+`~/.local/share/spotty/proton-bridge/`) only when the optional window is opened.
+Proton's licence notices and corresponding source are included there. Existing
+native Bridge installations on PATH are preferred. Nothing is installed in
+system directories. Packaging currently supports Linux x86_64.
 
-The trigger finds `spotty-proton-bridge-gui` on `PATH` or in `~/.cargo/bin`.
-This is a companion window launched by Spotty; it is not embedded in Spotty's
-settings. Bridge's local API allows only one login frontend. If the official
-Bridge GUI is already running, use it or choose **Quit Bridge** there before
-selecting **Start Bridge** in the companion. Human verification uses the
-official GUI; switching to it may briefly restart a headless Bridge.
-
-Bridge owns the saved account and credentials; enter passwords only in a
-login window, never in Spotty's search bar.
-Configure your email client with the local IMAP/SMTP details and the
-Bridge-generated password displayed in Bridge.
-
-Closing either login window keeps Bridge running in the background,
-independently of Spotty. Enable **Open Bridge at desktop login** in the
-companion or **Settings → Open on startup** in Bridge to reconnect at
-desktop login ([startup instructions](https://proton.me/support/automatically-start-bridge)).
-Choosing **Quit Bridge** stops mail connectivity. Removing the Spotty trigger
-does not sign out of Bridge or change its startup setting.
+Rebuild Spotty with Cargo and the current `trigger-backends` submodule to get
+this integration. An older installed Spotty binary cannot gain the packaged
+runtime merely by refreshing its Store listing. For standalone development
+and verification, see [the login package](proton-bridge-gui/README.md).
 
 ## Repository layout
 
