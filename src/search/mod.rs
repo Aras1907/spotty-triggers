@@ -449,7 +449,7 @@ fn regular_trigger_sources(
         {
             continue;
         }
-        let runs_commands = kw.id == "run"
+        let runs_commands = matches!(kw.id.as_str(), "run" | "proton-bridge")
             || matches!(
                 crate::triggers::by_id(&kw.id).map(|m| m.action),
                 Some(crate::triggers::TriggerAction::Shell { .. })

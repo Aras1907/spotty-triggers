@@ -507,6 +507,7 @@ impl LoginWindow {
                         crate::launch::backend_launch().ok().map(|plan| plan.executable)
                     } else { None };
                     self.closing = true;
+                    self.mail_settings = None;
                     self.clear_secrets();
                     self.message = "Opening the official Bridge window. Mail may reconnect briefly.".into();
                     if self.commands.is_none() { self.close_finished = true; }
@@ -535,7 +536,10 @@ impl eframe::App for LoginWindow {
 pub fn run() -> eframe::Result {
     if std::env::args().any(|argument| argument == "--background") {
         // No window at desktop login; release the stream for later interaction.
-        let runtime = tokio::runtime::Runtime::new().expect("Cannot start the Bridge worker");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Cannot start the Bridge worker");
         runtime.block_on(async {
             let Ok(path) = rpc::config_path() else { return };
             if rpc::Connection::connect(&path).await.is_err() {
