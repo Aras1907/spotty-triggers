@@ -64,9 +64,9 @@ Management is a core backend and cannot be removed.
 ## Proton Mail Bridge (optional service)
 
 Proton Mail Bridge is a local background IMAP/SMTP server, not a search
-trigger. Click **Install** in **Settings → Search → Server-side installations**, or
-click **Install** in the Store's separate **Server-side installations**
-section. Then click **Settings** to open its native GTK4/libadwaita window.
+trigger. Click **Install** in the Store's dedicated **Proton** section or in
+**Settings → Search → Services and integrations** to enable it. Then click
+**Settings** to open its native GTK4/libadwaita window.
 No trigger word or shortcut is registered. Existing Proton trigger installs
 are migrated automatically without deleting Bridge accounts.
 
@@ -92,8 +92,9 @@ For packaging, credentials, licensing and verification, see
 
 ## Proton VPN controls (optional integration)
 
-Install **Proton VPN** from Spotty's Trigger Store to add a native
-GTK4/libadwaita connection popup under **Settings → Search → Services and integrations**.
+Install **Proton VPN** from the Store's dedicated **Proton** section to add a
+native GTK4/libadwaita connection popup under
+**Settings → Search → Services and integrations**.
 It uses the official Proton VPN Linux CLI installed on the host for status,
 connect, disconnect and sign-out. Sign-in stays with Proton's CLI so its
 password, two-factor and security-key prompts remain under Proton's control.
