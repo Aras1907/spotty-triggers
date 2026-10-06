@@ -23,6 +23,7 @@ pub mod dictionary;
 pub mod emoji;
 pub mod files;
 pub mod jobs;
+pub mod proton;
 pub mod run;
 pub mod settings_panels;
 pub mod system;
@@ -100,6 +101,8 @@ pub enum Action {
     },
     /// Enter a trigger mode (carries the trigger word, e.g. "files", "pdf").
     EnterMode(String),
+    /// Open Spotty's Proton VPN popup for the installed VPN service.
+    OpenProtonVpn,
     /// Remove an installed trigger by id.
     UninstallTrigger(String),
     /// Start a long-running package operation in the background. It keeps
@@ -720,6 +723,22 @@ pub fn search_mode(
     if kw.id == "bluetooth" {
         return bluetooth::search(rest);
     }
+    if kw.id == "proton-vpn" {
+        return vec![SearchResult {
+            kind: ResultKind::System,
+            title: gettext("Open Proton VPN"),
+            subtitle: Some(gettext("Sign in, connect, or disconnect with Proton's official Linux CLI")),
+            icon: Some("network-vpn-symbolic".into()),
+            action: Action::OpenProtonVpn,
+            score: 100_000,
+        }];
+    }
+    if kw.id == "proton-calendar" {
+        return proton::calendar_search(rest, config);
+    }
+    if kw.id == "proton-drive" {
+        return proton::drive_search(rest, config);
+    }
     if kw.is_result() {
         return result_mode(&kw.id, rest, config, snap_lock);
     }
@@ -862,6 +881,21 @@ mod tests {
             !suggested.iter().any(|r| matches!(&r.action, Action::EnterMode(w) if w.is_empty())),
             "{suggested:?}"
         );
+    }
+
+    #[test]
+    fn installed_vpn_trigger_opens_the_service_popup() {
+        let mut config = Config::default();
+        config.proton_vpn_enabled = true;
+        config.install_builtin("proton-vpn");
+        let snapshot = Arc::new(RwLock::new(crate::index::Snapshot::default()));
+
+        let rows = search_mode("vpn", "", &config, &snapshot);
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(rows[0].action, Action::OpenProtonVpn));
+
+        config.uninstall_builtin("proton-vpn");
+        assert!(search_mode("vpn", "", &config, &snapshot).is_empty());
     }
 
     /// A config carrying the dictionary keyword (store-installed trigger).

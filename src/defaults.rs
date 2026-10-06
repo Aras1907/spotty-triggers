@@ -10,8 +10,25 @@ static CATALOG: LazyLock<Vec<RepoTrigger>> = LazyLock::new(|| {
         .expect("the pinned spotty-triggers catalog must be valid JSON")
 });
 
+/// Proton integrations that are both a Store service and an optional search
+/// trigger: (id, word, icon, search description).
+pub const PROTON_TRIGGERS: [(&str, &str, &str, &str); 3] = [
+    ("proton-vpn", "vpn", "network-vpn-symbolic", "Open Proton VPN sign-in and connection controls"),
+    ("proton-calendar", "cal", "x-office-calendar-symbolic", "Open Proton Calendar on a date"),
+    ("proton-drive", "drive", "folder-remote-symbolic", "Open Proton Drive or search its synced folder"),
+];
+
+fn proton_trigger(id: &str) -> Option<&'static (&'static str, &'static str, &'static str, &'static str)> {
+    PROTON_TRIGGERS.iter().find(|entry| entry.0 == id)
+}
+
 pub fn supports_native(id: &str) -> bool {
-    CATALOG.iter().any(|entry| entry.native && !entry.is_service() && entry.id == id)
+    match id {
+        // VPN drives Proton's Linux CLI; Calendar and Drive open the web apps.
+        "proton-vpn" => cfg!(target_os = "linux"),
+        "proton-calendar" | "proton-drive" => true,
+        _ => CATALOG.iter().any(|entry| entry.native && !entry.is_service() && entry.id == id),
+    }
 }
 
 fn keyword(entry: &RepoTrigger) -> CommandKeyword {
@@ -28,6 +45,18 @@ fn keyword(entry: &RepoTrigger) -> CommandKeyword {
 }
 
 pub fn command_keyword(id: &str) -> Option<CommandKeyword> {
+    if let Some(&(id, word, icon, description)) = proton_trigger(id) {
+        return Some(CommandKeyword {
+            id: id.into(),
+            word: word.into(),
+            description: gettext(description),
+            icon: icon.into(),
+            extensions: vec![],
+            all_files: false,
+            shortcut: String::new(),
+            enabled: true,
+        });
+    }
     CATALOG.iter().find(|entry| entry.native && !entry.is_service() && entry.id == id).map(keyword)
 }
 
@@ -69,6 +98,9 @@ pub fn display_name(id: &str) -> &'static str {
             "calc" => "Calc",
             "convert" => "Convert",
             "updates" => "Updates",
+            "proton-vpn" => "Proton VPN",
+            "proton-calendar" => "Proton Calendar",
+            "proton-drive" => "Proton Drive",
             _ => "Trigger",
         }
     }
@@ -112,5 +144,22 @@ mod service_tests {
         assert!(!supports_native("proton-bridge"));
         assert!(command_keyword("proton-bridge").is_none());
         assert!(command_keywords().iter().all(|keyword| keyword.id != "proton-bridge"));
+    }
+
+    #[test]
+    fn proton_vpn_service_has_a_search_keyword_but_is_not_preinstalled() {
+        assert!(supports_native("proton-vpn"));
+        let keyword = command_keyword("proton-vpn").expect("VPN trigger metadata");
+        assert_eq!(keyword.word, "vpn");
+        assert!(command_keywords().iter().all(|item| item.id != "proton-vpn"));
+    }
+
+    #[test]
+    fn proton_calendar_and_drive_have_keywords_but_are_not_preinstalled() {
+        for (id, word) in [("proton-calendar", "cal"), ("proton-drive", "drive")] {
+            assert!(supports_native(id));
+            assert_eq!(command_keyword(id).expect("Proton trigger metadata").word, word);
+            assert!(command_keywords().iter().all(|item| item.id != id));
+        }
     }
 }

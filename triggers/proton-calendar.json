@@ -1,0 +1,17 @@
+{
+  "id": "proton-calendar",
+  "name": "Proton Calendar",
+  "word": "cal",
+  "description": "Open Proton Calendar on today or any date",
+  "icon": "x-office-calendar-symbolic",
+  "shortcut": "",
+  "version": "1.0.0",
+  "author": "spotty",
+  "native": true,
+  "preinstalled": false,
+  "help": "Optional Proton Calendar trigger\n\nInstalling adds the `cal` trigger and a Proton Calendar row under Settings → Search → Services and integrations. `cal` opens calendar.proton.me on today; type a date such as `cal 2026-10-24`, `cal tomorrow` or `cal yesterday` to jump straight to that day.\n\nSettings chooses the default view (day, week or month) and which signed-in Proton account to open, matching the account order in Proton's account switcher.\n\nProton has no Linux desktop calendar client, so Spotty opens Proton's web app in your default browser. Sign-in happens on Proton's website; Spotty never sees or stores Proton credentials or calendar data. Uninstalling removes the trigger only.",
+  "action": {
+    "type": "native"
+  },
+  "category": "service"
+}

@@ -1,15 +1,15 @@
 {
   "id": "proton-vpn",
   "name": "Proton VPN",
-  "word": "",
-  "description": "Connect with Proton's official Linux VPN client",
+  "word": "vpn",
+  "description": "Open Proton VPN controls and connect through its official Linux service",
   "icon": "network-vpn-symbolic",
   "shortcut": "",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "spotty",
   "native": true,
   "preinstalled": false,
-  "help": "Optional Proton VPN controls in Spotty\n\nInstall this integration to add Proton VPN controls under Settings → Search → Services and integrations. It uses the official Proton VPN Linux CLI already installed on the host. Spotty does not install system packages or implement its own VPN tunnel.\n\nThe popup can show connection status and connect or disconnect using Proton's CLI. Sign in through Proton's own prompt, which handles the password and any two-factor verification. Spotty does not collect or store Proton credentials.\n\nUninstalling removes the Spotty controls only; it does not remove Proton's VPN client, sign you out, or disconnect an active VPN. The official Proton VPN GUI and CLI cannot be used at the same time.",
+  "help": "Optional Proton VPN search trigger and service controls\n\nInstalling adds the `vpn` trigger and a Proton VPN row under Settings → Search → Services and integrations. The popup shows connection status and can sign in, connect, disconnect, and sign out using Proton's official Linux CLI. Proton's package owns its privileged background service; Spotty does not install system packages, implement its own tunnel, or connect automatically when you install this integration.\n\nThe sign-in dialog asks for your Proton username, then opens Proton's CLI in a terminal for your password and any security-key or two-factor prompts. Spotty never reads or stores the password or second factor.\n\nUninstalling removes the Spotty trigger and controls only; it leaves Proton's package, account, and current connection untouched. Proton's Linux GUI and CLI cannot run at the same time.",
   "action": {
     "type": "native"
   },

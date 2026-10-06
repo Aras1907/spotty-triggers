@@ -45,7 +45,9 @@ a vulnerability.
 | [`triggers/updates.json`](triggers/updates.json) | Install from Store | Check and install updates |
 | [`triggers/dictionary.json`](triggers/dictionary.json) | `dict` | Look up a word definition |
 | [`triggers/translate.json`](triggers/translate.json) | `translate` | Translate text locally — detects the language, targets your system language |
-| [`triggers/proton-vpn.json`](triggers/proton-vpn.json) | Install from Store | Optional Proton VPN controls |
+| [`triggers/proton-vpn.json`](triggers/proton-vpn.json) | `vpn` | Optional Proton VPN controls |
+| [`triggers/proton-calendar.json`](triggers/proton-calendar.json) | `cal` | Open Proton Calendar on today or any date |
+| [`triggers/proton-drive.json`](triggers/proton-drive.json) | `drive` | Open Proton Drive or search a synced Drive folder |
 
 The six native result providers start uninstalled. Install one from the Store
 to add it to regular search. Then set an optional word or shortcut in Spotty
@@ -109,6 +111,23 @@ CLI through its existing host-command bridge. The CLI and host VPN services
 must be installed and authorized by the user. Uninstalling the Spotty
 integration leaves the Proton VPN package, account and active connection
 alone.
+
+## Proton Calendar and Proton Drive (optional integrations)
+
+Install **Proton Calendar** or **Proton Drive** from the Store's **Proton**
+section. Each adds a search trigger and a **Settings** button in the Store and
+under **Settings → Search → Services and integrations**.
+
+- `cal` opens calendar.proton.me on today. `cal 2026-10-24`, `cal tomorrow`
+  and `cal yesterday` jump to that day. Settings picks the default view (day,
+  week or month) and the Proton account slot (`/u/N`).
+- `drive` opens drive.proton.me. Settings picks the account slot and an
+  optional local folder already synced with Proton Drive (for example with
+  rclone). With a folder set, `drive <name>` searches names inside it.
+
+Proton ships no Linux desktop client for either, so both open Proton's web
+apps in the default browser. Spotty never handles Proton credentials and does
+not sync files.
 
 ## Repository layout
 

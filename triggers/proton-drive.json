@@ -1,0 +1,17 @@
+{
+  "id": "proton-drive",
+  "name": "Proton Drive",
+  "word": "drive",
+  "description": "Open Proton Drive or search a locally synced Drive folder",
+  "icon": "folder-remote-symbolic",
+  "shortcut": "",
+  "version": "1.0.0",
+  "author": "spotty",
+  "native": true,
+  "preinstalled": false,
+  "help": "Optional Proton Drive trigger\n\nInstalling adds the `drive` trigger and a Proton Drive row under Settings → Search → Services and integrations. `drive` opens drive.proton.me in your default browser.\n\nIn Settings you can choose which signed-in Proton account to open and, optionally, a local folder you already keep in sync with Proton Drive (for example with rclone). With a folder set, `drive <name>` searches file and folder names inside it and opens matches locally.\n\nProton has no official Linux Drive client, and Spotty does not sync files itself. Sign-in happens on Proton's website; Spotty never sees or stores Proton credentials. Uninstalling removes the trigger only and leaves your files untouched.",
+  "action": {
+    "type": "native"
+  },
+  "category": "service"
+}
