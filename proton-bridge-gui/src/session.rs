@@ -18,7 +18,6 @@ pub enum Command {
     Logout(String),
     Cancel(String),
     Close,
-    OpenOfficial,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,7 +30,7 @@ pub enum Step {
     KeyPin,
     TouchKey,
     Finished,
-    OfficialGui,
+    Recovery,
 }
 
 pub struct MailSettings {
@@ -83,9 +82,9 @@ pub fn login_update(event: login_event::Event) -> Update {
         LoginFidoTouchRequested(_) | LoginFidoTouchCompleted(_) => Update::Step(Step::TouchKey),
         Finished(_) | AlreadyLoggedIn(_) => Update::Step(Step::Finished),
         HvRequested(_) => Update::Error {
-            step: Step::OfficialGui,
+            step: Step::Recovery,
             message:
-                "Proton requires human verification. Finish sign-in in the official Bridge window."
+                "Proton requires human verification. Follow the recovery steps for your Proton account, then retry sign-in."
                     .into(),
         },
         Error(error) => {
@@ -112,12 +111,12 @@ pub fn login_update(event: login_event::Event) -> Update {
                     "The security key PIN was rejected. Try again.",
                 ),
                 9 => (
-                    Step::OfficialGui,
-                    "The security key PIN is blocked. Use the official Bridge window.",
+                    Step::Recovery,
+                    "The security key PIN is blocked. Unblock the key in your system security settings, then retry.",
                 ),
                 7 | 10 => (
-                    Step::OfficialGui,
-                    "Finish verification in the official Bridge window.",
+                    Step::Recovery,
+                    "Complete Proton's verification steps, then retry sign-in.",
                 ),
                 _ => (
                     Step::Password,
@@ -134,9 +133,9 @@ pub fn login_update(event: login_event::Event) -> Update {
 
 fn status_message(status: &tonic::Status) -> String {
     match status.code() {
-        tonic::Code::AlreadyExists => "Another Bridge login window is active. Use that window, or choose Quit Bridge there before reconnecting here.",
+        tonic::Code::AlreadyExists => "Another app is using Bridge's login connection. Close that sign-in form, then reconnect here.",
         tonic::Code::Unauthenticated => "Bridge's connection token changed. Reconnect before signing in.",
-        _ => "The local Bridge connection failed. Restart Bridge and reconnect.",
+        _ => "The local Bridge connection failed. Retry the connection.",
     }.into()
 }
 
@@ -155,8 +154,7 @@ async fn run_session(
         Err(message) => {
             send(Update::Error {
                 // A missing or starting local backend is a normal retry case.
-                // Reserve OfficialGui for conditions that need user action in
-                // Proton's own interface (verification, keyring, blocked key).
+                // Recovery conditions can be handled outside the login form.
                 step: Step::Password,
                 message,
             });
@@ -180,7 +178,7 @@ async fn run_session(
         client_platform: "linux".into(),
     });
     // Bridge's Go server does not send response headers until the first event.
-    // Start the stream reader independently, as the official Qt frontend does,
+    // Start the stream reader independently, as Bridge's native frontend does,
     // so a quiet stream cannot block ordinary unary startup requests.
     let (stream_updates, mut stream_messages) = mpsc::unbounded_channel();
     let mut stream_client = connection.client.clone();
@@ -424,41 +422,13 @@ async fn run_session(
                         let result = if stream_owned { connection.stop_stream().await } else { Ok(()) };
                         stream_owned = false;
                         if result.is_err() {
-                            send(Update::Error { step: Step::OfficialGui, message: "Could not detach cleanly. Check that Bridge is still running.".into() });
-                        }
-                        break;
-                    }
-                    Some(Command::OpenOfficial) => {
-                        if !username.is_empty() { abort(&mut connection, username).await; }
-                        // A headless --grpc Bridge cannot display a window.
-                        // The user requested the official GUI: release our
-                        // stream and quit this instance so it can be relaunched.
-                        if stream_owned && !stream_confirmed {
-                            match tokio::time::timeout(Duration::from_millis(750), stream_messages.recv()).await {
-                                Ok(Some(StreamUpdate::Failed(_))) => stream_owned = false,
-                                Ok(Some(StreamUpdate::Event(_))) => {}
-                                Ok(Some(StreamUpdate::Ended)) | Ok(None) => stream_owned = false,
-                                Err(_) => {}
-                            }
-                        }
-                        while let Ok(update) = stream_messages.try_recv() {
-                            match update {
-                                StreamUpdate::Failed(_) | StreamUpdate::Ended => stream_owned = false,
-                                StreamUpdate::Event(_) => stream_owned = true,
-                            }
-                        }
-                        let can_quit = stream_owned;
-                        if can_quit { let _ = connection.stop_stream().await; }
-                        stream_owned = false;
-                        if can_quit {
-                            let request = connection.unary(protocol::Empty {});
-                            let _ = connection.client.quit(request).await;
+                            send(Update::Error { step: Step::Recovery, message: "Could not detach cleanly. Retry after Bridge reconnects.".into() });
                         }
                         break;
                     }
                 };
                 if let Err(status) = result {
-                    send(Update::Error { step: Step::OfficialGui, message: status_message(&status) });
+                    send(Update::Error { step: Step::Recovery, message: status_message(&status) });
                 }
             }
         }
@@ -474,19 +444,32 @@ async fn run_session(
 }
 
 /// Initialize saved accounts at desktop login without retaining a GUI stream.
-pub async fn initialize_and_detach(path: PathBuf) {
+pub async fn initialize_and_detach(path: PathBuf) -> Result<(), String> {
     let (commands, receiver) = mpsc::unbounded_channel();
+    let outcome = std::sync::Mutex::new(None);
     run_session(
         path,
         receiver,
         |update| {
-            if matches!(update, Update::Ready { .. } | Update::Error { .. }) {
+            let result = match update {
+                Update::Ready { .. } => Some(Ok(())),
+                Update::Error { message, .. } => Some(Err(message)),
+                _ => None,
+            };
+            if let Some(result) = result {
+                if let Ok(mut outcome) = outcome.lock() {
+                    *outcome = Some(result);
+                }
                 let _ = commands.send(Command::Close);
             }
         },
         false,
     )
     .await;
+    outcome
+        .into_inner()
+        .map_err(|_| "Bridge initialization result was unavailable.".to_owned())?
+        .ok_or_else(|| "Bridge closed before saved accounts were initialized.".to_owned())?
 }
 
 async fn abort(connection: &mut Connection, username: String) {
@@ -559,8 +542,8 @@ async fn dispatch(
             }
         }
         Some(stream_event::Event::Keychain(keychain)) if keychain.event.is_some() => send(Update::Error {
-            step: Step::OfficialGui,
-            message: "Bridge needs a working Linux keyring. Unlock or configure it in the official Bridge window.".into(),
+            step: Step::Recovery,
+            message: "Bridge needs a working Linux keyring. Unlock or configure it in your desktop keyring settings, then retry.".into(),
         }),
         _ => {}
     }
@@ -612,7 +595,7 @@ async fn show_account(connection: &mut Connection, id: String, send: &impl Fn(Up
         Ok(settings) => send(Update::MailSettings(settings)),
         Err(_) => send(Update::Error {
             step: Step::Finished,
-            message: "Cannot read this account's mail-client settings. Reopen its settings after signing in, or use the official Bridge window.".into(),
+            message: "Cannot read this account's mail-client settings. Reopen its settings after signing in, then retry.".into(),
         }),
     }
 }

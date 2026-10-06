@@ -92,8 +92,6 @@ struct Window {
     startup: adw::SwitchRow,
     cancel: gtk::Button,
     recovery: gtk::Box,
-    official: gtk::Button,
-    menu_official: gtk::Button,
     add_account: gtk::Button,
     close: gtk::Button,
     rendered: RefCell<Rendered>,
@@ -301,12 +299,10 @@ impl Window {
         stack.add_named(&mail, Some("finished"));
         let verification = adw::StatusPage::builder()
             .icon_name("dialog-information-symbolic")
-            .title("Continue in Proton Bridge")
-            .description(
-                "Use the official Bridge window to finish verification or unlock your keyring.",
-            )
+            .title("Check your keyring")
+            .description("Unlock your Linux keyring in your desktop settings, then retry sign-in. Human verification may require a Proton account recovery step.")
             .build();
-        stack.add_named(&verification, Some("official"));
+        stack.add_named(&verification, Some("recovery"));
         body.append(&stack);
 
         let cancel = gtk::Button::builder()
@@ -373,21 +369,6 @@ impl Window {
         recovery.append(&start);
         recovery.append(&reconnect);
         body.append(&recovery);
-        let official = gtk::Button::builder()
-            .label("Open official Bridge window")
-            .css_classes(["flat"])
-            .build();
-        {
-            let model = model.clone();
-            let secrets = secrets.downgrade();
-            official.connect_clicked(move |_| {
-                model.borrow_mut().open_official();
-                if let Some(secrets) = secrets.upgrade() {
-                    secrets.clear_all();
-                }
-            });
-        }
-        body.append(&official);
         let menu = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
             .tooltip_text("Bridge options")
@@ -396,24 +377,6 @@ impl Window {
         let options = gtk::Box::new(gtk::Orientation::Vertical, 4);
         for margin in ["margin-start", "margin-end", "margin-top", "margin-bottom"] {
             options.set_property(margin, 6i32);
-        }
-        let menu_official = gtk::Button::builder()
-            .label("Open official Bridge window")
-            .css_classes(["flat"])
-            .build();
-        {
-            let model = model.clone();
-            let secrets = secrets.downgrade();
-            let popover = popover.downgrade();
-            menu_official.connect_clicked(move |_| {
-                model.borrow_mut().open_official();
-                if let Some(secrets) = secrets.upgrade() {
-                    secrets.clear_all();
-                }
-                if let Some(popover) = popover.upgrade() {
-                    popover.popdown();
-                }
-            });
         }
         let add_account = gtk::Button::builder()
             .label("Add account")
@@ -446,7 +409,6 @@ impl Window {
             });
         }
         options.append(&add_account);
-        options.append(&menu_official);
         let help = gtk::LinkButton::with_label(
             "https://proton.me/support/protonmail-bridge-install",
             "Bridge setup guide",
@@ -514,8 +476,7 @@ impl Window {
                 if let Some(secrets) = secrets.upgrade() {
                     secrets.clear_all();
                 }
-                if state.close_finished && !state.open_official && state.official_started.is_none()
-                {
+                if state.close_finished {
                     glib::Propagation::Proceed
                 } else {
                     glib::Propagation::Stop
@@ -540,8 +501,6 @@ impl Window {
             startup,
             cancel,
             recovery,
-            official,
-            menu_official,
             add_account,
             close,
             rendered: RefCell::new(Rendered::default()),
@@ -713,7 +672,7 @@ impl Window {
             state.ready
                 && !state.closing
                 && state.step != Step::Finished
-                && state.step != Step::OfficialGui
+                && state.step != Step::Recovery
                 && (state.busy || state.step != Step::Password),
         );
         let can_recover =
@@ -721,12 +680,6 @@ impl Window {
         self.recovery
             .set_visible(!state.ready && state.commands.is_none() && can_recover);
         self.recovery.set_sensitive(can_recover);
-        self.official.set_sensitive(can_recover);
-        self.official.set_visible(
-            state.step == Step::OfficialGui
-                || (!state.ready && state.commands.is_none() && can_recover),
-        );
-        self.menu_official.set_sensitive(can_recover);
         self.add_account.set_sensitive(enabled);
         self.close
             .set_visible(state.embedded || state.step == Step::Finished);
@@ -846,7 +799,7 @@ impl Window {
             Step::MailboxPassword => "mailbox",
             Step::SecurityKey | Step::KeyPin | Step::TouchKey => "security",
             Step::Finished => "finished",
-            Step::OfficialGui => "official",
+            Step::Recovery => "recovery",
         };
         self.stack.set_visible_child_name(page);
         if rendered.step != Some(state.step) || (!rendered.ready && state.ready) {
@@ -933,8 +886,7 @@ impl EmbeddedBridge {
         ui.username.set_text("");
         {
             let mut state = ui.model.borrow_mut();
-            // Uninstalling while the official-window action is pending should
-            // detach the embedded login stream without opening another UI.
+            // Uninstalling should detach the embedded login stream.
             state.detach_embedded();
         }
 
@@ -984,11 +936,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             ui.model.borrow_mut().tick();
             ui.render();
             let state = ui.model.borrow();
-            let close = ui.standalone_window.is_some()
-                && state.closing
-                && state.close_finished
-                && !state.open_official
-                && state.official_started.is_none();
+            let close = ui.standalone_window.is_some() && state.closing && state.close_finished;
             drop(state);
             if close {
                 ui.secrets.clear_all();

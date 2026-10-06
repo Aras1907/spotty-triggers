@@ -1,5 +1,5 @@
 //! Flatpak desktop-login integration through the XDG Background portal.
-//! Native Bridge autostart remains managed by Bridge's own RPC.
+//! Bridge stays in Spotty's process, which the portal starts in daemon mode.
 
 use gtk::gio;
 use gtk::glib::{self, VariantDict, variant::ToVariant};
@@ -206,7 +206,7 @@ fn parse_response(response: &glib::Variant, enabled: bool) -> Result<(), String>
 }
 
 fn flatpak_commandline() -> Vec<String> {
-    ["spotty", "--proton-bridge-gui", "--background"]
+    ["spotty", "--daemon"]
         .into_iter()
         .map(str::to_owned)
         .collect()
@@ -228,11 +228,7 @@ mod tests {
         assert_eq!(request.type_().as_str(), "(sa{sv})");
         assert_eq!(
             flatpak_commandline(),
-            [
-                "spotty".to_owned(),
-                "--proton-bridge-gui".to_owned(),
-                "--background".to_owned()
-            ]
+            ["spotty".to_owned(), "--daemon".to_owned()]
         );
     }
 

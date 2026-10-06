@@ -25,7 +25,7 @@ session without stopping Bridge.
    displayed secrets are cleared immediately, and the interface waits for
    Bridge to confirm sign-out. Use **Sign in** to connect again.
 5. Optionally enable **Start Bridge at desktop login**, then close Settings.
-   Bridge keeps running independently of Spotty.
+   Spotty keeps the Bridge service available in its own process.
 
 Use **Uninstall** in the Store to remove the service and its Settings page from
 Spotty. This preserves saved accounts and running mail connections, while
@@ -39,33 +39,32 @@ clipboard manager may record.
 
 A paid Proton Mail plan and a working unlocked Linux keyring are required.
 Only one frontend can use Bridge's login stream at a time. An occupied stream
-is never stopped or replaced. Human verification and keyring setup can use
-**Open official Bridge window**, which launches the included Qt GUI. This
-handoff briefly restarts a headless Bridge. Normal closure keeps it running.
+is never stopped or replaced. Unlock the keyring in your desktop's keyring
+settings if needed. Closing the login view detaches its stream while the
+Bridge service remains available in Spotty.
 
 ## Native Cargo packaging
 
 Native builds require GTK4, libadwaita and OpenSSL development libraries.
 
-The default `bundled-bridge` feature embeds the official Linux x86_64 runtime
-and its corresponding source archive. Cargo's build script uses Python 3's
-standard library to fetch the pinned release and checks committed SHA-256
-hashes before accepting either download. Outputs stay in Cargo's build folder.
-GTK4 4.12+ and libadwaita 1.6+ are shared with Spotty. Standalone compilation
-needs their development packages, in addition to Python 3 and a C toolchain.
-The binary requires no download at user installation time. Its first activation
-extracts the runtime into the user's private Spotty data folder, atomically,
-without a package manager or system-wide writes. The bundle also supplies the FIDO2/CBOR libraries needed by the native backend,
-with their pinned hashes, source archives and licence notices. These libraries
-are used only by the packaged Bridge process. The included Qt fallback adds
-package size but is not loaded by the Rust login window.
+The default `bundled-bridge` feature builds Proton Bridge as a Go shared library
+for Spotty's process and embeds that library with its corresponding source.
+Cargo's build script uses Python 3's standard library to fetch pinned upstream
+archives and checks committed SHA-256 hashes before accepting downloads. It
+builds the Go adapter in Cargo's output folder. GTK4 4.12+ and libadwaita 1.6+
+are shared with Spotty. Native builds need their development packages, Go 1.26
+with CGO, Python 3 and a C toolchain. The binary requires no download at user
+installation time. Its first activation copies the shared library and the
+pinned FIDO2/CBOR runtime dependencies into a private Spotty cache. It does not
+extract or launch Proton's executable or Qt interface, and makes no system-wide
+writes. Cache identity includes the compiled adapter hash, so an upgraded
+Spotty build activates its matching library.
 
-The bundled runtime is used ahead of a host `protonmail-bridge`, so the backend,
-libraries and autostart behavior stay together. Builds made with
-`--no-default-features` use an existing launcher from PATH. For a custom native
-layout, `SPOTTY_PROTON_BRIDGE_BACKEND` may identify an absolute backend path. The
-backend runs with `--grpc` and the original launcher path for updates and
-autostart; no credentials or parent-lifetime flag are passed as arguments.
+The shared library acquires Bridge's single-instance lock before Spotty treats
+the service as started. Bridge server goroutines run inside Spotty and stop
+when Spotty shuts down or the service is uninstalled. Desktop autostart starts
+Spotty in daemon mode; it does not start a separate Bridge process. No
+credentials are passed in process arguments.
 
 For standalone development inside this checkout:
 
@@ -75,15 +74,14 @@ CARGO_HOME="$PWD/.cargo-proton" cargo install --path proton-bridge-gui \
 ./build/proton-bridge-gui/bin/spotty-proton-bridge-gui
 ```
 
-Use `--no-default-features` to build a window for an existing native Bridge,
-without bundling the x86_64 payload. The `SPOTTY_PROTON_BUNDLE_CACHE` build
-variable can point to an absolute folder containing `bridge.deb`,
+The `SPOTTY_PROTON_BUNDLE_CACHE` build variable can point to an absolute folder containing `bridge.deb`,
 `source.tar.gz`, and every archive named in `native_dependencies.json`; every
 archive is SHA-256 checked. Set `SPOTTY_PROTON_BUNDLE_OFFLINE=1` to make a build
 fail if any pinned archive is absent from that cache. Flatpak packages grant
-network access for Bridge and Secret Service access for its Linux keyring. Its
-desktop-login launcher re-enters Spotty through `flatpak run` so Bridge starts
-inside those permissions. Do not use a Flatpak build for native development.
+network access for Bridge and Secret Service access for its Linux keyring. The
+desktop-login portal re-enters Spotty through `flatpak run` so the in-process
+service starts inside those permissions. Do not use a Flatpak build for native
+development.
 
 ## Credentials and protocol
 
@@ -96,8 +94,9 @@ The form never calls Proton's cloud API directly. Login fields are masked and
 cleared after submission, errors, cancellation and closure. Bridge manages
 saved login in its vault and Linux keyring. Mail-client passwords are retrieved
 only for connected accounts, held in zeroizing app-owned buffers and discarded
-on account changes and closure. Desktop startup initializes the saved accounts without a window, then detaches
-the login stream so it remains available for the next settings window.
+on account changes and closure. Desktop startup initializes the saved accounts
+without a window, then detaches the login stream so it remains available for
+the next settings window.
 
 No passwords are logged, passed through shell
 commands or written by this window. GUI/transport libraries can retain transient

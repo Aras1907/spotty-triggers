@@ -1,8 +1,6 @@
 use crate::rpc::{self, LoginMethod};
 use crate::session::{self, Command, Step, Update};
 mod window;
-use std::os::unix::process::CommandExt;
-use std::process::{Command as Process, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 use zeroize::{Zeroize, Zeroizing};
@@ -26,9 +24,7 @@ struct LoginWindow {
     busy: bool,
     closing: bool,
     close_finished: bool,
-    open_official: bool,
-    official_wait: Option<std::path::PathBuf>,
-    official_started: Option<mpsc::Receiver<bool>>,
+    waiting_for_initialization: bool,
     start_pending: Option<std::time::Instant>,
     preparing: Option<mpsc::Receiver<Result<(), String>>>,
     connecting_since: Option<std::time::Instant>,
@@ -65,9 +61,7 @@ impl LoginWindow {
             busy: false,
             closing: false,
             close_finished: false,
-            open_official: false,
-            official_wait: None,
-            official_started: None,
+            waiting_for_initialization: false,
             start_pending: None,
             preparing: None,
             connecting_since: None,
@@ -78,9 +72,21 @@ impl LoginWindow {
     }
 
     fn connect(&mut self) {
+        if crate::engine::is_initializing() {
+            self.waiting_for_initialization = true;
+            self.message =
+                "Bridge is preparing saved accounts. You can connect when it is ready.".into();
+            return;
+        }
+        if !crate::engine::is_running() {
+            self.message =
+                "Bridge is not running inside Spotty. Start the service, then reconnect.".into();
+            return;
+        }
         if self.commands.is_some() {
             return;
         }
+        self.start_pending = None;
         let path = match rpc::config_path() {
             Ok(path) => path,
             Err(message) => {
@@ -308,8 +314,7 @@ impl LoginWindow {
         self.accounts.clear();
         self.mail_settings = None;
         self.mail_revision += 1;
-        self.open_official = false;
-        self.official_wait = None;
+        self.waiting_for_initialization = false;
         self.begin_close();
     }
 
@@ -320,66 +325,25 @@ impl LoginWindow {
         let (sender, receiver) = mpsc::channel();
         self.preparing = Some(receiver);
         self.busy = true;
-        self.message = "Preparing the packaged Bridge runtime…".into();
+        self.message = "Starting the in-process Bridge service…".into();
         self.runtime
             .as_ref()
             .expect("Bridge model runtime is already shutting down")
             .spawn_blocking(move || {
-                let result = (|| -> Result<(), String> {
-                    let plan = crate::launch::backend_launch()?;
-                    // Independent lifetime; credentials never appear in argv.
-                    let mut process = Process::new(plan.executable);
-                    crate::bundle::configure_libraries(&plan.launcher, &mut process);
-                    process
-                        .args(plan.arguments)
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null());
-                    unsafe {
-                        process.pre_exec(|| {
-                            if libc::setsid() == -1 {
-                                return Err(std::io::Error::last_os_error());
-                            }
-                            Ok(())
-                        });
-                    }
-                    let mut child = process
-                        .spawn()
-                        .map_err(|_| "Cannot start the native Bridge runtime.".to_owned())?;
-                    std::thread::spawn(move || {
-                        let _ = child.wait();
-                    });
-                    Ok(())
-                })();
+                let result = crate::engine::start();
                 let _ = sender.send(result);
             });
-    }
-
-    fn open_official(&mut self) {
-        self.open_official = true;
-        self.official_wait = if self.ready {
-            crate::launch::backend_launch()
-                .ok()
-                .map(|plan| plan.executable)
-        } else {
-            None
-        };
-        self.closing = true;
-        self.start_pending = None;
-        self.mail_settings = None;
-        self.clear_secrets();
-        self.message = "Opening the official Bridge window. Mail may reconnect briefly.".into();
-        if self.commands.is_none() {
-            self.close_finished = true;
-        } else {
-            self.send(Command::OpenOfficial);
-        }
     }
 
     // Only the worker uses Tokio. GTK polls its messages on the main thread;
     // the widget tree is retained, so edits and focus survive worker updates.
     fn tick(&mut self) -> bool {
         let mut changed = self.poll();
+        if self.waiting_for_initialization && !crate::engine::is_initializing() {
+            self.waiting_for_initialization = false;
+            self.connect();
+            changed = true;
+        }
         if self
             .connecting_since
             .is_some_and(|started| started.elapsed() > Duration::from_secs(40))
@@ -412,53 +376,10 @@ impl LoginWindow {
                 _ => {}
             }
         }
-        if self.closing && self.close_finished && self.open_official {
-            self.open_official = false;
-            let backend = self.official_wait.take();
-            let (started, receiver) = mpsc::channel();
-            self.official_started = Some(receiver);
-            std::thread::spawn(move || {
-                let launcher = crate::launch::official_launcher()
-                    .unwrap_or_else(|_| "protonmail-bridge".into());
-                let mut command = Process::new(&launcher);
-                crate::bundle::configure_libraries(&launcher, &mut command);
-                if let Some(backend) = backend {
-                    command.arg("--wait").arg(backend);
-                }
-                let child = command
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn();
-                let _ = started.send(child.is_ok());
-                if let Ok(mut child) = child {
-                    let _ = child.wait();
-                }
-            });
-            changed = true;
-        }
-        if let Some(started) = self
-            .official_started
-            .as_ref()
-            .and_then(|receiver| receiver.try_recv().ok())
-        {
-            self.official_started = None;
-            if !started {
-                self.closing = false;
-                self.close_finished = false;
-                self.message =
-                    "Cannot open the official Bridge window. Reconnect to try again.".into();
-            } else if self.embedded {
-                self.closing = false;
-                self.close_finished = false;
-                self.message = "Official Bridge opened. Reconnect when it is ready.".into();
-            }
-            changed = true;
-        }
         if let Some(started) = self.start_pending.filter(|_| !self.closing) {
             if started.elapsed() > Duration::from_secs(45) {
                 self.start_pending = None;
-                self.message = "Bridge has not become ready. Open the official Bridge window to check its keyring, then reconnect.".into();
+                self.message = "Bridge has not become ready. Check that your Linux keyring is unlocked, then retry.".into();
                 changed = true;
             } else if self.commands.is_none()
                 && rpc::config_path().is_ok_and(|path| path.exists())
@@ -493,54 +414,6 @@ impl Drop for LoginWindow {
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-    if std::env::args().any(|argument| argument == "--background") {
-        // No window at desktop login; release the stream for later interaction.
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Cannot start the Bridge worker");
-        runtime.block_on(async {
-            let Ok(path) = rpc::config_path() else { return };
-            if rpc::Connection::connect(&path).await.is_err() {
-                let Ok(plan) = crate::launch::backend_launch() else {
-                    return;
-                };
-                let mut process = Process::new(plan.executable);
-                crate::bundle::configure_libraries(&plan.launcher, &mut process);
-                process
-                    .args(plan.arguments)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null());
-                unsafe {
-                    process.pre_exec(|| {
-                        if libc::setsid() == -1 {
-                            return Err(std::io::Error::last_os_error());
-                        }
-                        Ok(())
-                    });
-                }
-                let Ok(mut child) = process.spawn() else {
-                    return;
-                };
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-            }
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
-            loop {
-                if rpc::Connection::connect(&path).await.is_ok() {
-                    break;
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-            session::initialize_and_detach(path).await;
-        });
-        return Ok(());
-    }
     if std::env::args().any(|argument| argument == "--help") {
         println!(
             "Spotty Proton Mail Bridge login window\nLaunch without arguments. Sign-in details are entered only in the GUI.\nIncludes Proton Bridge on Linux x86_64 with bundled-bridge enabled. Requires a working Linux keyring."
