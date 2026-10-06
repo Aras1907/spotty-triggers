@@ -70,13 +70,14 @@ struct Rendered {
     ready: bool,
     secrets_revision: u64,
     mail_revision: Option<u64>,
+    mail_error: Option<(String, String)>,
     accounts: Vec<(String, String, i32)>,
     account_rows: Vec<adw::ActionRow>,
 }
 
 struct Window {
     model: Model,
-    window: gtk::Window,
+    window: gtk::Widget,
     standalone_window: Option<adw::ApplicationWindow>,
     overlay: adw::ToastOverlay,
     status: gtk::Label,
@@ -166,6 +167,32 @@ fn submit_action(
     }
 }
 
+fn request_account_settings(model: &Model, secrets: &WeakSecrets, account_id: String) {
+    let mut state = model.borrow_mut();
+    if !state.ready || state.busy || state.closing {
+        return;
+    }
+    state.mail_settings = None;
+    state.settings_retry_id = None;
+    state.clear_secrets();
+    state.busy = true;
+    state.message = "Loading saved mail settings…".into();
+    state.send(Command::ShowAccount(account_id));
+    if let Some(secrets) = secrets.upgrade() {
+        secrets.clear_all();
+    }
+}
+
+fn password_clipboard_content(value: &str) -> gtk::gdk::ContentProvider {
+    let text = value.to_value();
+    let text_provider = gtk::gdk::ContentProvider::for_value(&text);
+    let secret_hint = gtk::gdk::ContentProvider::for_bytes(
+        "x-kde-passwordManagerHint",
+        &glib::Bytes::from_static(b"secret"),
+    );
+    gtk::gdk::ContentProvider::new_union(&[text_provider, secret_hint])
+}
+
 impl Window {
     fn new(app: &adw::Application, model: Model) -> Rc<Self> {
         let window = adw::ApplicationWindow::builder()
@@ -179,7 +206,7 @@ impl Window {
     }
 
     fn build(
-        window: gtk::Window,
+        window: gtk::Widget,
         standalone_window: Option<adw::ApplicationWindow>,
         model: Model,
         on_back: Option<Rc<dyn Fn()>>,
@@ -525,7 +552,8 @@ impl Window {
                 let Some(settings) = &state.mail_settings else {
                     return;
                 };
-                button.clipboard().set_text(settings.password.as_str());
+                let provider = password_clipboard_content(settings.password.as_str());
+                let _ = button.clipboard().set_content(Some(&provider));
             } else if let Some(value) = &value {
                 button.clipboard().set_text(value);
             }
@@ -568,16 +596,16 @@ impl Window {
         let entry = gtk::Entry::builder()
             .text(settings.password.as_str())
             .editable(false)
-            .visibility(true)
+            .visibility(false)
             .hexpand(true)
             .css_classes(["flat", "monospace"])
             .input_hints(gtk::InputHints::PRIVATE)
             .build();
         entry.update_property(&[gtk::accessible::Property::Label("Bridge password")]);
         let reveal = gtk::ToggleButton::builder()
-            .icon_name("view-conceal-symbolic")
-            .tooltip_text("Hide Bridge password")
-            .active(true)
+            .icon_name("view-reveal-symbolic")
+            .tooltip_text("Show Bridge password")
+            .active(false)
             .css_classes(["flat"])
             .build();
         let weak_entry = entry.downgrade();
@@ -636,6 +664,28 @@ impl Window {
         self.mail.append(&servers);
     }
 
+    fn render_mail_settings_error(&self, message: &str, account_id: String) {
+        let status = adw::StatusPage::builder()
+            .icon_name("dialog-warning-symbolic")
+            .title("Couldn't load mail settings")
+            .description(format!(
+                "{message}\nChoose Settings beside the connected account below to try again."
+            ))
+            .build();
+        self.mail.append(&status);
+        let retry = gtk::Button::builder()
+            .label("Retry")
+            .halign(gtk::Align::Center)
+            .css_classes(["suggested-action", "pill"])
+            .build();
+        let model = self.model.clone();
+        let secrets = self.secrets.downgrade();
+        retry.connect_clicked(move |_| {
+            request_account_settings(&model, &secrets, account_id.clone());
+        });
+        self.mail.append(&retry);
+    }
+
     fn render(&self) {
         let state = self.model.borrow();
         let mut rendered = self.rendered.borrow_mut();
@@ -687,15 +737,37 @@ impl Window {
             self.secrets.clear_login();
             rendered.secrets_revision = state.secrets_revision;
         }
-        if state.mail_settings.is_none() || rendered.mail_revision != Some(state.mail_revision) {
+        let mail_error = if state.mail_settings.is_none()
+            && state.step == Step::Finished
+            && !state.busy
+        {
+            // The retry target is part of the rendered error state: two
+            // accounts can share the same sanitized status message.
+            state
+                .settings_retry_id
+                .clone()
+                .map(|id| (state.message.clone(), id))
+        } else {
+            None
+        };
+        let mail_changed = if state.mail_settings.is_some() {
+            rendered.mail_revision != Some(state.mail_revision)
+        } else {
+            rendered.mail_revision.is_some() || rendered.mail_error != mail_error
+        };
+        if mail_changed {
             self.secrets.clear_generated();
             while let Some(child) = self.mail.first_child() {
                 self.mail.remove(&child);
             }
             rendered.mail_revision = None;
+            rendered.mail_error = None;
             if let Some(settings) = &state.mail_settings {
                 self.render_mail(settings);
                 rendered.mail_revision = Some(state.mail_revision);
+            } else if let Some((message, account_id)) = &mail_error {
+                self.render_mail_settings_error(message, account_id.clone());
+                rendered.mail_error = Some((message.clone(), account_id.clone()));
             }
         }
         if state.accounts != rendered.accounts {
@@ -722,14 +794,7 @@ impl Window {
                     let model = self.model.clone();
                     let secrets = self.secrets.downgrade();
                     button.connect_clicked(move |_| {
-                        let mut state = model.borrow_mut();
-                        state.mail_settings = None;
-                        state.clear_secrets();
-                        state.busy = true;
-                        state.send(Command::ShowAccount(id.clone()));
-                        if let Some(secrets) = secrets.upgrade() {
-                            secrets.clear_all();
-                        }
+                        request_account_settings(&model, &secrets, id.clone());
                     });
                     row.add_suffix(&button);
                     let logout = gtk::Button::builder()
@@ -833,7 +898,9 @@ pub(super) struct EmbeddedBridge {
 }
 
 impl EmbeddedBridge {
-    pub(super) fn new(parent: &adw::PreferencesWindow, on_back: impl Fn() + 'static) -> Self {
+    /// Build embedded Bridge controls with the caller's widget as their host
+    /// and their parent for confirmation dialogs.
+    pub(super) fn new(parent: &impl IsA<gtk::Widget>, on_back: impl Fn() + 'static) -> Self {
         let mut model = LoginWindow::unconnected();
         model.embedded = true;
         model.connect();
@@ -872,11 +939,18 @@ impl EmbeddedBridge {
     }
 
     pub(super) fn close(mut self) {
-        self.close_inner();
+        self.close_inner(None);
     }
 
-    fn close_inner(&mut self) {
+    pub(super) fn close_with_completion(mut self, on_closed: impl FnOnce() + 'static) {
+        self.close_inner(Some(Box::new(on_closed)));
+    }
+
+    fn close_inner(&mut self, mut on_closed: Option<Box<dyn FnOnce()>>) {
         let Some(ui) = self.ui.take() else {
+            if let Some(on_closed) = on_closed.take() {
+                on_closed();
+            }
             return;
         };
         if let Some(timer) = self.timer.take() {
@@ -892,18 +966,26 @@ impl EmbeddedBridge {
 
         if ui.model.borrow().close_finished {
             ui.secrets.clear_all();
+            if let Some(on_closed) = on_closed.take() {
+                on_closed();
+            }
             return;
         }
 
         // Keep the controller (and its Tokio runtime) alive while the session
         // sends the RPC Close frame and reports Update::Closed. The callback
         // owns the UI only during this short drain, then drops it on Break.
+        let on_closed = RefCell::new(on_closed);
         glib::timeout_add_local(Duration::from_millis(50), move || {
             ui.model.borrow_mut().poll();
             ui.secrets.clear_all();
             let finished = ui.model.borrow().close_finished;
             if finished {
                 ui.secrets.clear_all();
+                let on_closed = on_closed.borrow_mut().take();
+                if let Some(on_closed) = on_closed {
+                    on_closed();
+                }
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue
@@ -914,7 +996,7 @@ impl EmbeddedBridge {
 
 impl Drop for EmbeddedBridge {
     fn drop(&mut self) {
-        self.close_inner();
+        self.close_inner(None);
     }
 }
 
@@ -940,7 +1022,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             drop(state);
             if close {
                 ui.secrets.clear_all();
-                ui.window.close();
+                ui.standalone_window.as_ref().unwrap().close();
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue
@@ -991,7 +1073,8 @@ mod tests {
         let Some(directory) = std::env::var_os("SPOTTY_PROTON_TEST_SCREENSHOTS") else {
             return;
         };
-        ui.window.present();
+        let window = ui.standalone_window.as_ref().unwrap();
+        window.present();
         let context = glib::MainContext::default();
         for _ in 0..40 {
             while context.pending() {
@@ -999,15 +1082,11 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        let paintable = gtk::WidgetPaintable::new(Some(&ui.window));
+        let paintable = gtk::WidgetPaintable::new(Some(window));
         let snapshot = gtk::Snapshot::new();
-        paintable.snapshot(
-            &snapshot,
-            ui.window.width() as f64,
-            ui.window.height() as f64,
-        );
+        paintable.snapshot(&snapshot, window.width() as f64, window.height() as f64);
         let node = snapshot.to_node().expect("The native window should render");
-        ui.window
+        window
             .renderer()
             .unwrap()
             .render_texture(&node, None)
@@ -1078,7 +1157,11 @@ mod tests {
         drop(ui);
         drop(model);
 
-        handle.close();
+        let drained = Rc::new(std::cell::Cell::new(false));
+        {
+            let drained = drained.clone();
+            handle.close_with_completion(move || drained.set(true));
+        }
         parent.remove(&page);
         drop(group);
         drop(page);
@@ -1094,13 +1177,110 @@ mod tests {
         }
         assert!(matches!(command_receiver.try_recv(), Ok(Command::Close)));
         assert!(weak_ui.upgrade().is_some());
+        assert!(!drained.get(), "the old frontend remains in drain until ack");
 
         updates.send(Update::Closed).unwrap();
         pump();
+        assert!(drained.get(), "reopen may proceed after the RPC close ack");
         assert!(weak_ui.upgrade().is_none());
         assert!(weak_model.upgrade().is_none());
         drop(generated);
         drop(command_receiver);
+    }
+
+    #[test]
+    #[ignore = "requires a native desktop display; run with --ignored --test-threads=1"]
+    fn account_settings_failure_keeps_retry_and_masks_sensitive_credentials() {
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.spotty.ProtonBridge.RetryTest")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>).unwrap();
+
+        let mut state = LoginWindow::unconnected();
+        state.ready = true;
+        state.step = Step::Finished;
+        state.message = "Connected to Proton Mail.".into();
+        state.accounts = vec![("test-account".into(), "test@proton.me".into(), 2)];
+        state.mail_settings = Some(session::MailSettings {
+            id: "test-account".into(),
+            username: "test@proton.me".into(),
+            addresses: vec!["test@proton.me".into()],
+            password: Zeroizing::new("generated-secret".into()),
+            hostname: "127.0.0.1".into(),
+            imap_port: 1143,
+            smtp_port: 1025,
+            imap_ssl: false,
+            smtp_ssl: true,
+        });
+        let (commands, mut command_receiver) = tokio::sync::mpsc::unbounded_channel();
+        state.commands = Some(commands);
+        let (updates, update_receiver) = mpsc::channel();
+        state.updates = update_receiver;
+        let model = Rc::new(RefCell::new(state));
+        let ui = Window::new(&app, model.clone());
+        let generated = ui.secrets.generated.borrow().as_ref().unwrap().clone();
+        assert!(!generated.property::<bool>("visibility"));
+        assert!(password_clipboard_content("generated-secret")
+            .formats()
+            .contain_mime_type("x-kde-passwordManagerHint"));
+
+        updates
+            .send(Update::AccountSettingsFailed {
+                id: "test-account".into(),
+                accounts: Some(vec![
+                    ("test-account".into(), "test@proton.me".into(), 2),
+                    ("second-account".into(), "second@proton.me".into(), 2),
+                ]),
+                message: "Bridge could not load these account settings. Retry the request.".into(),
+            })
+            .unwrap();
+        model.borrow_mut().poll();
+        ui.render();
+        assert!(generated.text().is_empty());
+        assert_eq!(model.borrow().settings_retry_id.as_deref(), Some("test-account"));
+        assert!(button_in(&ui.rendered.borrow().account_rows[0], "Settings").is_some());
+
+        // The local error text can match across accounts. The Retry closure
+        // must refresh when its target ID changes even if the message does not.
+        updates
+            .send(Update::AccountSettingsFailed {
+                id: "second-account".into(),
+                accounts: Some(vec![
+                    ("test-account".into(), "test@proton.me".into(), 2),
+                    ("second-account".into(), "second@proton.me".into(), 2),
+                ]),
+                message: "Bridge could not load these account settings. Retry the request.".into(),
+            })
+            .unwrap();
+        model.borrow_mut().poll();
+        ui.render();
+        assert_eq!(
+            model.borrow().settings_retry_id.as_deref(),
+            Some("second-account")
+        );
+
+        button_in(&ui.mail, "Retry").unwrap().emit_clicked();
+        assert!(matches!(
+            command_receiver.try_recv().unwrap(),
+            Command::ShowAccount(id) if id == "second-account"
+        ));
+        assert!(model.borrow().settings_retry_id.is_none());
+        // Production's 100 ms UI timer renders this model transition; drive
+        // the same render pass explicitly in this fake-controller test.
+        ui.render();
+        assert!(ui.mail.first_child().is_none());
+
+        model.borrow_mut().begin_close();
+        assert!(matches!(command_receiver.try_recv(), Ok(Command::Close)));
+        updates.send(Update::Closed).unwrap();
+        model.borrow_mut().poll();
+        ui.standalone_window.as_ref().unwrap().destroy();
+        drop(ui);
+        drop(model);
+        drop(command_receiver);
+        app.quit();
     }
 
     #[test]
@@ -1191,12 +1371,15 @@ mod tests {
         assert_eq!(ui.stack.visible_child_name().as_deref(), Some("finished"));
         snapshot(&ui, "mail-settings");
         if std::env::var_os("SPOTTY_PROTON_TEST_SCREENSHOTS").is_some() {
-            ui.window.set_default_size(380, 760);
+            ui.standalone_window
+                .as_ref()
+                .unwrap()
+                .set_default_size(380, 760);
             snapshot(&ui, "mail-settings-narrow");
         }
         let mut entry = ui.secrets.generated.borrow().as_ref().unwrap().clone();
         assert_eq!(entry.text(), "GeneratedBridgeSecret");
-        assert!(entry.property::<bool>("visibility"));
+        assert!(!entry.property::<bool>("visibility"));
         assert!(!entry.is_editable());
         let controls = entry.parent().unwrap();
         let reveal = entry
@@ -1213,7 +1396,7 @@ mod tests {
             Some("Copy Bridge password")
         );
 
-        ui.window.present();
+        ui.standalone_window.as_ref().unwrap().present();
         pump();
         let account_row = ui.rendered.borrow().account_rows[0].clone();
         let sign_out = button_in(&account_row, "Sign out").unwrap();
@@ -1296,13 +1479,16 @@ mod tests {
         assert!(ui.secrets.generated.borrow().is_none());
         assert!(model.borrow().mail_settings.is_none());
         ui.secrets.password.set_text("unsent-secret");
-        ui.window.emit_by_name::<bool>("close-request", &[]);
+        ui.standalone_window
+            .as_ref()
+            .unwrap()
+            .emit_by_name::<bool>("close-request", &[]);
         assert!(ui.secrets.password.text().is_empty());
         assert!(matches!(receiver.try_recv().unwrap(), Command::Close));
         assert!(!model.borrow().close_finished);
         updates.send(Update::Closed).unwrap();
         model.borrow_mut().poll();
         assert!(model.borrow().close_finished);
-        ui.window.destroy();
+        ui.standalone_window.as_ref().unwrap().destroy();
     }
 }

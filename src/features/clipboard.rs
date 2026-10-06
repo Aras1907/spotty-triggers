@@ -1,9 +1,13 @@
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+
+thread_local! {
+    static CLIPBOARD_REVISION: Cell<u64> = const { Cell::new(0) };
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "lowercase")]
@@ -366,6 +370,7 @@ impl ClipboardHistory {
         let last_img_signal = last_img_hash.clone();
         let last_file_signal = last_file_hash.clone();
         cb.connect_changed(move |_| {
+            CLIPBOARD_REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
             log::debug!("clipboard: change signal fired");
             read_current_clipboard(
                 &cb_signal,
@@ -417,6 +422,12 @@ fn read_current_clipboard(
     if !crate::security::clipboard_capture_enabled() { return; }
     log::debug!("clipboard: read_current_clipboard called");
     let formats = cb.formats();
+    // Password providers explicitly mark sensitive clipboard content. Never
+    // request its text or persist it in Spotty's history.
+    if formats.contain_mime_type("x-kde-passwordManagerHint") {
+        last_text.borrow_mut().take();
+        return;
+    }
 
     // Image first so a copied image is not shadowed by text/uri-list.
     let has_image = formats.contains_type(gdk::Texture::static_type())
@@ -506,7 +517,17 @@ fn read_current_clipboard(
     }
 
     let last = last_text.clone();
+    let clipboard = cb.downgrade();
+    let requested_revision = CLIPBOARD_REVISION.with(Cell::get);
     cb.read_text_async(gio::Cancellable::NONE, move |res| {
+        // A new secret may replace ordinary text while an earlier async read
+        // is pending. Recheck the provider before retaining the returned text.
+        let Some(clipboard) = clipboard.upgrade() else { return };
+        if CLIPBOARD_REVISION.with(Cell::get) != requested_revision
+            || clipboard.formats().contain_mime_type("x-kde-passwordManagerHint")
+        {
+            return;
+        }
         match res {
             Ok(Some(txt)) => {
                 let txt = txt.to_string();

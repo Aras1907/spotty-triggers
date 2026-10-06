@@ -18,6 +18,7 @@ struct LoginWindow {
     message: String,
     accounts: Vec<(String, String, i32)>,
     mail_settings: Option<session::MailSettings>,
+    settings_retry_id: Option<String>,
     auto_start: bool,
     autostart: bool,
     ready: bool,
@@ -55,6 +56,7 @@ impl LoginWindow {
             message: "Connecting to Proton Mail Bridge…".into(),
             accounts: Vec::new(),
             mail_settings: None,
+            settings_retry_id: None,
             auto_start: cfg!(feature = "bundled-bridge"),
             autostart: false,
             ready: false,
@@ -146,6 +148,7 @@ impl LoginWindow {
             return;
         }
         self.mail_settings = None;
+        self.settings_retry_id = None;
         self.busy = true;
         self.message = "Waiting for Proton Mail Bridge…".into();
         self.send(Command::Login {
@@ -157,6 +160,7 @@ impl LoginWindow {
 
     fn logout(&mut self, account_id: String) {
         self.mail_settings = None;
+        self.settings_retry_id = None;
         self.mail_revision += 1;
         self.clear_secrets();
         self.busy = true;
@@ -218,6 +222,7 @@ impl LoginWindow {
                     self.step = step;
                     self.message = message;
                     self.mail_settings = None;
+                    self.settings_retry_id = None;
                     self.busy = false;
                     self.connecting_since = None;
                     self.clear_secrets();
@@ -236,14 +241,41 @@ impl LoginWindow {
                             .push((settings.id.clone(), settings.username.clone(), 2));
                     }
                     self.mail_settings = Some(settings);
+                    self.settings_retry_id = None;
                     self.step = Step::Finished;
                     self.busy = false;
                     self.clear_secrets();
                     self.message = "Connected to Proton Mail.".into();
                 }
+                Update::AccountSettingsFailed {
+                    id,
+                    accounts,
+                    message,
+                } => {
+                    // Keep the Bridge session and connected account available
+                    // so the account popup can retry its generated credentials.
+                    if let Some(accounts) = accounts {
+                        self.accounts = accounts;
+                    }
+                    self.step = if self
+                        .accounts
+                        .iter()
+                        .any(|(account_id, _, state)| account_id == &id && *state == 2)
+                    {
+                        Step::Finished
+                    } else {
+                        Step::Password
+                    };
+                    self.settings_retry_id = (self.step == Step::Finished).then_some(id);
+                    self.mail_settings = None;
+                    self.busy = false;
+                    self.clear_secrets();
+                    self.message = message;
+                }
                 Update::LoggedOut { accounts } => {
                     self.mail_revision += 1;
                     self.mail_settings = None;
+                    self.settings_retry_id = None;
                     self.accounts = accounts;
                     self.step = Step::Password;
                     self.busy = false;
@@ -268,6 +300,7 @@ impl LoginWindow {
                 }
                 Update::Closed => {
                     self.mail_settings = None;
+                    self.settings_retry_id = None;
                     self.commands = None;
                     self.ready = false;
                     self.busy = false;
@@ -290,6 +323,7 @@ impl LoginWindow {
         self.start_pending = None;
         self.connecting_since = None;
         self.mail_settings = None;
+        self.settings_retry_id = None;
         self.clear_secrets();
         if self.commands.is_none() {
             self.close_finished = true;
@@ -313,6 +347,7 @@ impl LoginWindow {
         self.username.zeroize();
         self.accounts.clear();
         self.mail_settings = None;
+        self.settings_retry_id = None;
         self.mail_revision += 1;
         self.waiting_for_initialization = false;
         self.begin_close();
@@ -423,19 +458,19 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     window::run()
 }
 
-/// Build the Bridge controls inside Spotty's own PreferencesWindow. The page
-/// owns the same login/session model as the standalone helper UI, while the
-/// caller controls navigation back to its surrounding settings page.
+/// Build the Bridge controls inside a host widget. The popup owns the same
+/// login/session model as the standalone helper UI and calls `on_back` when
+/// its navigation action is selected.
 pub struct EmbeddedBridge(window::EmbeddedBridge);
 
 impl EmbeddedBridge {
-    /// Build Bridge controls in Spotty's PreferencesWindow. Keep this handle
-    /// for as long as the page is installed; close it when the page is removed.
-    pub fn new(parent: &adw::PreferencesWindow, on_back: impl Fn() + 'static) -> Self {
+    /// Build Bridge controls under a GTK widget. Keep this handle for the
+    /// popup's lifetime and close it when the popup is dismissed.
+    pub fn new(parent: &impl gtk::prelude::IsA<gtk::Widget>, on_back: impl Fn() + 'static) -> Self {
         Self(window::EmbeddedBridge::new(parent, on_back))
     }
 
-    /// Return the widget to place in the surrounding preferences page.
+    /// Return the widget to place in the host popup.
     pub fn widget(&self) -> gtk::Widget {
         self.0.widget()
     }
@@ -444,6 +479,12 @@ impl EmbeddedBridge {
     /// acknowledges `Close`. The Bridge service itself remains running.
     pub fn close(self) {
         self.0.close();
+    }
+
+    /// Detach the login stream and invoke `on_closed` after Bridge confirms
+    /// that the previous frontend has released its event stream.
+    pub fn close_with_completion(self, on_closed: impl FnOnce() + 'static) {
+        self.0.close_with_completion(on_closed);
     }
 }
 

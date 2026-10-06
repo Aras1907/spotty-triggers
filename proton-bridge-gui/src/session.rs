@@ -5,7 +5,7 @@ use crate::rpc::{Connection, LoginMethod};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 pub enum Command {
     Login {
@@ -51,6 +51,11 @@ pub enum Update {
         autostart: bool,
     },
     MailSettings(MailSettings),
+    AccountSettingsFailed {
+        id: String,
+        accounts: Option<Vec<(String, String, i32)>>,
+        message: String,
+    },
     LoggedOut {
         accounts: Vec<(String, String, i32)>,
     },
@@ -550,52 +555,343 @@ async fn dispatch(
 }
 
 async fn show_account(connection: &mut Connection, id: String, send: &impl Fn(Update)) {
-    let result = async {
-        let request = connection.unary(protocol::StringValue { value: id });
-        let mut user = connection.client.get_user(request).await?.into_inner();
-        // Only connected accounts may expose their generated mail-client secret.
-        let bytes = Zeroizing::new(std::mem::take(&mut user.password));
-        if user.state != 2 || bytes.is_empty() {
-            return Err(tonic::Status::failed_precondition(
-                "Account is not connected",
-            ));
-        }
-        let password = Zeroizing::new(
-            std::str::from_utf8(&bytes)
-                .map(str::to_owned)
-                .map_err(|_| tonic::Status::internal("Invalid Bridge password"))?,
-        );
-        let request = connection.unary(protocol::Empty {});
-        let hostname = connection
-            .client
-            .hostname(request)
-            .await?
-            .into_inner()
-            .value;
-        let request = connection.unary(protocol::Empty {});
-        let settings = connection
-            .client
-            .mail_server_settings(request)
-            .await?
-            .into_inner();
-        Ok::<_, tonic::Status>(MailSettings {
-            id: user.id,
-            username: user.username,
-            addresses: user.addresses,
-            password,
-            hostname,
-            imap_port: settings.imap_port,
-            smtp_port: settings.smtp_port,
-            imap_ssl: settings.use_ssl_for_imap,
-            smtp_ssl: settings.use_ssl_for_smtp,
-        })
-    }
-    .await;
-    match result {
+    match read_account_settings(connection, id.clone()).await {
         Ok(settings) => send(Update::MailSettings(settings)),
-        Err(_) => send(Update::Error {
-            step: Step::Finished,
-            message: "Cannot read this account's mail-client settings. Reopen its settings after signing in, then retry.".into(),
-        }),
+        Err(message) => {
+            let accounts = tokio::time::timeout(Duration::from_secs(3), get_accounts(connection))
+                .await
+                .ok()
+                .and_then(Result::ok);
+            send(Update::AccountSettingsFailed {
+                id,
+                accounts,
+                message: message.into(),
+            });
+        }
+    }
+}
+
+// Keep the three Bridge reads separate so the UI can give a useful recovery
+// hint without ever forwarding a server error string (which may contain data).
+// Tests exercise the same path through a fake RPC implementation.
+trait AccountSettingsRpc {
+    fn get_user(
+        &mut self,
+        id: String,
+    ) -> impl std::future::Future<Output = Result<protocol::User, tonic::Status>> + Send;
+    fn hostname(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<String, tonic::Status>> + Send;
+    fn mail_server_settings(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<protocol::ImapSmtpSettings, tonic::Status>> + Send;
+}
+
+impl AccountSettingsRpc for Connection {
+    fn get_user(
+        &mut self,
+        id: String,
+    ) -> impl std::future::Future<Output = Result<protocol::User, tonic::Status>> + Send {
+        async move {
+            let request = self.unary(protocol::StringValue { value: id });
+            Ok(self.client.get_user(request).await?.into_inner())
+        }
+    }
+
+    fn hostname(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<String, tonic::Status>> + Send {
+        async move {
+            let request = self.unary(protocol::Empty {});
+            Ok(self.client.hostname(request).await?.into_inner().value)
+        }
+    }
+
+    fn mail_server_settings(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<protocol::ImapSmtpSettings, tonic::Status>> + Send
+    {
+        async move {
+            let request = self.unary(protocol::Empty {});
+            Ok(self
+                .client
+                .mail_server_settings(request)
+                .await?
+                .into_inner())
+        }
+    }
+}
+
+async fn read_account_settings(
+    rpc: &mut impl AccountSettingsRpc,
+    id: String,
+) -> Result<MailSettings, &'static str> {
+    // LoginFinished may precede the user list update by a short interval. Give
+    // Bridge up to two seconds to publish the connected account before showing
+    // a retry state. This mirrors upstream's own bounded user-change wait.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut user = loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err("Bridge has not published this account yet. Retry the account settings.");
+        }
+        match tokio::time::timeout(remaining, rpc.get_user(id.clone())).await {
+            Err(_) => {
+                return Err(
+                    "Bridge is taking too long to publish this account. Retry the account settings.",
+                );
+            }
+            Ok(Ok(user)) if user.state == 2 => break user,
+            Ok(Ok(mut user)) => {
+                user.password.zeroize();
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining > Duration::from_millis(100) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                } else {
+                    tokio::time::sleep(remaining).await;
+                    return Err("This account is no longer connected. Sign in again, then retry.");
+                }
+            }
+            Ok(Err(status))
+                if status.code() == tonic::Code::NotFound
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                tokio::time::sleep(remaining.min(Duration::from_millis(100))).await;
+            }
+            Ok(Err(status)) => {
+                return Err(match status.code() {
+                    tonic::Code::Unauthenticated => {
+                        "Bridge's local connection expired. Reconnect, then retry."
+                    }
+                    tonic::Code::NotFound => {
+                        "Bridge no longer has this account. Refresh the account list, then retry."
+                    }
+                    _ => "Bridge could not read this account. Reconnect, then retry.",
+                });
+            }
+        }
+    };
+    if user.id != id {
+        user.password.zeroize();
+        return Err("Bridge returned a different account. Refresh the account list, then retry.");
+    }
+    // The password is generated by Bridge and is only used for connected users.
+    let bytes = Zeroizing::new(std::mem::take(&mut user.password));
+    if bytes.is_empty() {
+        return Err(
+            "Bridge has no generated mail-client password for this account. Sign in again, then retry.",
+        );
+    }
+    let password = Zeroizing::new(std::str::from_utf8(&bytes).map(str::to_owned).map_err(
+        |_| "Bridge returned an invalid mail-client password. Sign in again, then retry.",
+    )?);
+    let hostname = rpc.hostname().await.map_err(|status| match status.code() {
+        tonic::Code::Unauthenticated => "Bridge's local connection expired. Reconnect, then retry.",
+        _ => "Bridge could not read its mail-server address. Reconnect, then retry.",
+    })?;
+    if !matches!(hostname.as_str(), "127.0.0.1" | "localhost" | "::1") {
+        return Err(
+            "Bridge returned an unexpected mail-server address. Reconnect before using these settings.",
+        );
+    }
+    let settings = rpc
+        .mail_server_settings()
+        .await
+        .map_err(|status| match status.code() {
+            tonic::Code::Unauthenticated => {
+                "Bridge's local connection expired. Reconnect, then retry."
+            }
+            _ => "Bridge could not read its mail-server settings. Reconnect, then retry.",
+        })?;
+    if !(1..=65_535).contains(&settings.imap_port) || !(1..=65_535).contains(&settings.smtp_port) {
+        return Err(
+            "Bridge returned invalid mail-server ports. Reconnect before using these settings.",
+        );
+    }
+    Ok(MailSettings {
+        id: user.id,
+        username: user.username,
+        addresses: user.addresses,
+        password,
+        hostname,
+        imap_port: settings.imap_port,
+        smtp_port: settings.smtp_port,
+        imap_ssl: settings.use_ssl_for_imap,
+        smtp_ssl: settings.use_ssl_for_smtp,
+    })
+}
+
+#[cfg(test)]
+mod account_settings_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::future::Future;
+
+    struct FakeAccountRpc {
+        users: VecDeque<Result<protocol::User, tonic::Status>>,
+        last_user: protocol::User,
+        hostname: Option<Result<String, tonic::Status>>,
+        settings: Option<Result<protocol::ImapSmtpSettings, tonic::Status>>,
+        hostname_calls: usize,
+        settings_calls: usize,
+    }
+
+    impl AccountSettingsRpc for FakeAccountRpc {
+        fn get_user(
+            &mut self,
+            _id: String,
+        ) -> impl Future<Output = Result<protocol::User, tonic::Status>> + Send {
+            async move {
+                self.users
+                    .pop_front()
+                    .unwrap_or_else(|| Ok(self.last_user.clone()))
+            }
+        }
+
+        fn hostname(&mut self) -> impl Future<Output = Result<String, tonic::Status>> + Send {
+            async move {
+                self.hostname_calls += 1;
+                self.hostname
+                    .take()
+                    .expect("fake hostname result is used once")
+            }
+        }
+
+        fn mail_server_settings(
+            &mut self,
+        ) -> impl Future<Output = Result<protocol::ImapSmtpSettings, tonic::Status>> + Send
+        {
+            async move {
+                self.settings_calls += 1;
+                self.settings
+                    .take()
+                    .expect("fake settings result is used once")
+            }
+        }
+    }
+
+    fn fake(user_state: i32, password: Vec<u8>) -> FakeAccountRpc {
+        FakeAccountRpc {
+            users: VecDeque::new(),
+            last_user: protocol::User {
+                id: "fake-account-id".into(),
+                username: "person@example.test".into(),
+                state: user_state,
+                password,
+                addresses: vec!["person@example.test".into()],
+            },
+            hostname: Some(Ok("127.0.0.1".into())),
+            settings: Some(Ok(protocol::ImapSmtpSettings {
+                imap_port: 1143,
+                smtp_port: 1025,
+                use_ssl_for_imap: false,
+                use_ssl_for_smtp: true,
+            })),
+            hostname_calls: 0,
+            settings_calls: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn reads_generated_password_and_server_settings_for_connected_account() {
+        let mut rpc = fake(2, b"generated-mail-secret".to_vec());
+        let settings = read_account_settings(&mut rpc, "fake-account-id".into())
+            .await
+            .unwrap();
+        assert_eq!(settings.id, "fake-account-id");
+        assert_eq!(settings.username, "person@example.test");
+        assert_eq!(&*settings.password, "generated-mail-secret");
+        assert_eq!(settings.hostname, "127.0.0.1");
+        assert_eq!((settings.imap_port, settings.smtp_port), (1143, 1025));
+        assert!(!settings.imap_ssl && settings.smtp_ssl);
+        assert_eq!(rpc.hostname_calls, 1);
+        assert_eq!(rpc.settings_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn retries_until_login_finished_account_is_published() {
+        let mut rpc = fake(2, b"generated-mail-secret".to_vec());
+        rpc.users
+            .push_back(Err(tonic::Status::not_found("private detail")));
+        let result = read_account_settings(&mut rpc, "fake-account-id".into()).await;
+        assert!(result.is_ok());
+        assert_eq!(rpc.hostname_calls, 1);
+        assert_eq!(rpc.settings_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn never_requests_or_returns_password_for_disconnected_account() {
+        let mut rpc = fake(0, b"must-not-be-used".to_vec());
+        let error = read_account_settings(&mut rpc, "fake-account-id".into())
+            .await
+            .err()
+            .expect("disconnected account must fail");
+        assert!(error.contains("no longer connected"));
+        assert_eq!(rpc.hostname_calls, 0);
+        assert_eq!(rpc.settings_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn server_errors_are_sanitized_and_identify_the_failed_stage() {
+        let mut rpc = fake(2, b"generated-mail-secret".to_vec());
+        rpc.hostname = Some(Err(tonic::Status::internal("secret-token-in-server-error")));
+        let error = read_account_settings(&mut rpc, "fake-account-id".into())
+            .await
+            .err()
+            .expect("hostname RPC failure must be reported");
+        assert!(error.contains("mail-server address"));
+        assert!(!error.contains("secret-token"));
+        assert_eq!(rpc.hostname_calls, 1);
+        assert_eq!(rpc.settings_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn rejects_non_utf8_password_bytes_without_exposing_them() {
+        let mut rpc = fake(2, vec![0xff, 0xfe]);
+        let error = read_account_settings(&mut rpc, "fake-account-id".into())
+            .await
+            .err()
+            .expect("invalid password bytes must be rejected");
+        assert!(error.contains("invalid mail-client password"));
+        assert_eq!(rpc.hostname_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn rejects_a_user_response_for_a_different_account() {
+        let mut rpc = fake(2, b"generated-mail-secret".to_vec());
+        rpc.last_user.id = "different-account-id".into();
+        let error = read_account_settings(&mut rpc, "fake-account-id".into())
+            .await
+            .err()
+            .expect("a different user must be rejected");
+        assert!(error.contains("different account"));
+        assert_eq!(rpc.hostname_calls, 0);
+        assert_eq!(rpc.settings_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn rejects_non_loopback_hostnames_and_invalid_ports() {
+        let mut rpc = fake(2, b"generated-mail-secret".to_vec());
+        rpc.hostname = Some(Ok("mail.attacker.example".into()));
+        let error = read_account_settings(&mut rpc, "fake-account-id".into())
+            .await
+            .err()
+            .expect("non-loopback host must be rejected");
+        assert!(error.contains("unexpected mail-server address"));
+        assert_eq!(rpc.settings_calls, 0);
+
+        let mut rpc = fake(2, b"generated-mail-secret".to_vec());
+        rpc.settings = Some(Ok(protocol::ImapSmtpSettings {
+            imap_port: 0,
+            smtp_port: 65_536,
+            use_ssl_for_imap: true,
+            use_ssl_for_smtp: true,
+        }));
+        let error = read_account_settings(&mut rpc, "fake-account-id".into())
+            .await
+            .err()
+            .expect("invalid ports must be rejected");
+        assert!(error.contains("invalid mail-server ports"));
     }
 }

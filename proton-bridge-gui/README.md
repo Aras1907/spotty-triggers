@@ -16,7 +16,7 @@ session without stopping Bridge.
 1. In the Store, find **Server-side installations** and click **Install** for
    Proton Mail Bridge. This enables the local mail server service; it adds no
    search keyword or shortcut.
-2. Open Bridge in Spotty's Settings window. If signed out, enter your Proton account details and
+2. Open Bridge's popup from Spotty's Settings window. If signed out, enter your Proton account details and
    complete any two-factor, mailbox-password or security-key prompts.
 3. If already connected, Settings automatically retrieves the generated
    Bridge password, mail username, IMAP/SMTP host, ports and encryption.
@@ -27,15 +27,16 @@ session without stopping Bridge.
 5. Optionally enable **Start Bridge at desktop login**, then close Settings.
    Spotty keeps the Bridge service available in its own process.
 
-Use **Uninstall** in the Store to remove the service and its Settings page from
-Spotty. This preserves saved accounts and running mail connections, while
-preventing desktop-login startup from reactivating the removed service.
+Use **Uninstall** in the Store to remove the service and dismiss its popup from
+Spotty. This preserves saved accounts but stops the mail server and disconnects
+mail clients, preventing desktop-login startup from reactivating the removed service.
 **Install** restores access without adding a trigger word.
 
 Reopen the service's **Settings** button whenever you need mail credentials.
-The generated password is shown by default and can be hidden using its
-visibility button. Copying places it on the desktop clipboard, which a
-clipboard manager may record.
+The generated password is hidden by default and can be revealed using its
+visibility button. Copying marks it as sensitive, and Spotty excludes marked
+content from its clipboard history. Other clipboard managers may ignore the
+marker and retain copied content.
 
 A paid Proton Mail plan and a working unlocked Linux keyring are required.
 Only one frontend can use Bridge's login stream at a time. An occupied stream
