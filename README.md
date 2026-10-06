@@ -45,6 +45,7 @@ a vulnerability.
 | [`triggers/updates.json`](triggers/updates.json) | Install from Store | Check and install updates |
 | [`triggers/dictionary.json`](triggers/dictionary.json) | `dict` | Look up a word definition |
 | [`triggers/translate.json`](triggers/translate.json) | `translate` | Translate text locally — detects the language, targets your system language |
+| [`triggers/proton-vpn.json`](triggers/proton-vpn.json) | Install from Store | Optional Proton VPN controls |
 
 The six native result providers start uninstalled. Install one from the Store
 to add it to regular search. Then set an optional word or shortcut in Spotty
@@ -88,6 +89,25 @@ verification can use the included official Bridge window.
 
 For packaging, credentials, licensing and verification, see
 [the login package](proton-bridge-gui/README.md).
+
+## Proton VPN controls (optional integration)
+
+Install **Proton VPN** from Spotty's Trigger Store to add a native
+GTK4/libadwaita connection popup under **Settings → Search → Services and integrations**.
+It uses the official Proton VPN Linux CLI installed on the host for status,
+connect, disconnect and sign-out. Sign-in stays with Proton's CLI so its
+password, two-factor and security-key prompts remain under Proton's control.
+Spotty does not collect VPN credentials, implement a tunnel, or install system
+packages.
+
+Install Proton's official Linux CLI separately using its
+[Linux installation guide](https://protonvpn.com/support/download-and-installation/linux).
+Proton officially supports the CLI on Fedora GNOME and says its CLI and GUI
+apps cannot run at the same time. In a Flatpak build, Spotty calls the host
+CLI through its existing host-command bridge. The CLI and host VPN services
+must be installed and authorized by the user. Uninstalling the Spotty
+integration leaves the Proton VPN package, account and active connection
+alone.
 
 ## Repository layout
 

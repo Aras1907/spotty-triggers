@@ -1,0 +1,17 @@
+{
+  "id": "proton-vpn",
+  "name": "Proton VPN",
+  "word": "",
+  "description": "Connect with Proton's official Linux VPN client",
+  "icon": "network-vpn-symbolic",
+  "shortcut": "",
+  "version": "1.0.0",
+  "author": "spotty",
+  "native": true,
+  "preinstalled": false,
+  "help": "Optional Proton VPN controls in Spotty\n\nInstall this integration to add Proton VPN controls under Settings → Search → Services and integrations. It uses the official Proton VPN Linux CLI already installed on the host. Spotty does not install system packages or implement its own VPN tunnel.\n\nThe popup can show connection status and connect or disconnect using Proton's CLI. Sign in through Proton's own prompt, which handles the password and any two-factor verification. Spotty does not collect or store Proton credentials.\n\nUninstalling removes the Spotty controls only; it does not remove Proton's VPN client, sign you out, or disconnect an active VPN. The official Proton VPN GUI and CLI cannot be used at the same time.",
+  "action": {
+    "type": "native"
+  },
+  "category": "service"
+}

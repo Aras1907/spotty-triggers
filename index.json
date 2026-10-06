@@ -175,5 +175,18 @@
     "native": true,
     "preinstalled": false,
     "category": "service"
+  },
+  {
+    "id": "proton-vpn",
+    "name": "Proton VPN",
+    "word": "",
+    "description": "Connect with Proton's official Linux VPN client",
+    "icon": "network-vpn-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": "",
+    "native": true,
+    "preinstalled": false,
+    "category": "service"
   }
 ]
