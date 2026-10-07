@@ -2,14 +2,14 @@
   "id": "proton-vpn",
   "name": "Proton VPN",
   "word": "vpn",
-  "description": "Open Proton VPN controls and connect through its official Linux service",
+  "description": "Proton VPN built into Spotty: sign in, pick a country and connect",
   "icon": "network-vpn-symbolic",
   "shortcut": "",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "author": "spotty",
   "native": true,
   "preinstalled": false,
-  "help": "Optional Proton VPN search trigger and service controls\n\nInstalling adds the `vpn` trigger and a Proton VPN row under Settings → Search → Services and integrations. The popup shows connection status and can sign in, connect, disconnect, and sign out using Proton's official Linux CLI. Proton's package owns its privileged background service; Spotty does not install system packages, implement its own tunnel, or connect automatically when you install this integration.\n\nThe sign-in dialog asks for your Proton username, then opens Proton's CLI in a terminal for your password and any security-key or two-factor prompts. Spotty never reads or stores the password or second factor.\n\nUninstalling removes the Spotty trigger and controls only; it leaves Proton's package, account, and current connection untouched. Proton's Linux GUI and CLI cannot run at the same time.",
+  "help": "Proton VPN, built into Spotty\n\nInstalling adds the `vpn` trigger and a Proton VPN row under Settings → Search → Services and integrations. Spotty includes Proton's official Linux VPN client library, so no separate Proton app or CLI is needed.\n\nSign in once in the Proton VPN window with your Proton username and password (and your authenticator code if you use two-factor). Spotty passes the password straight to Proton's client and never stores it; Proton keeps the session in your keyring.\n\nTrigger words: `vpn on` connects to your preferred country or the fastest server; `vpn off` disconnects; start typing a country (`vpn ge` → Germany, Georgia…) or a city (`vpn zur` → Zurich) for suggestions as you type; `vpn CH#242` connects to a server; `vpn status` opens the window. Results arrive as a notification.\n\nThe window shows the connection, a country picker, your preferred country, and Proton's settings: protocol, NetShield, kill switch, VPN Accelerator, Moderate NAT, port forwarding and IPv6.\n\nUninstalling removes the trigger and controls; an active connection stays up until you disconnect.",
   "action": {
     "type": "native"
   },

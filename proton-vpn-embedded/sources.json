@@ -1,0 +1,27 @@
+{
+  "comment": "Proton VPN client sources, pinned by commit and archive SHA-256. Python wheels are pinned in requirements.lock.",
+  "sources": [
+    {
+      "name": "python-proton-core",
+      "url": "https://codeload.github.com/ProtonVPN/python-proton-core/tar.gz/9bd4662ddde2d439e4e8c900f0431e23958bd512",
+      "sha256": "23b1d7a5a0de9f9e207675bbddf9f3e4fbeb61174212d8cf79de697596e5eb78"
+    },
+    {
+      "name": "python-proton-keyring-linux",
+      "url": "https://codeload.github.com/ProtonVPN/python-proton-keyring-linux/tar.gz/77b7653b783adac70dffefff5cc99fa7650fcc20",
+      "sha256": "7aba3bb4e30cb6ec959d4715377205bc8b1bcc9dbc76a3be63084a7877bad6be"
+    },
+    {
+      "name": "python-proton-vpn-api-core",
+      "url": "https://codeload.github.com/ProtonVPN/python-proton-vpn-api-core/tar.gz/1b6dcda24566568437d423c095c14e0aa9d71ec6",
+      "sha256": "63b921c90ccaeb443862b30a116424e4bbd1786337d25356672698e0fd9ba77e"
+    },
+    {
+      "name": "protun",
+      "url": "https://codeload.github.com/ProtonVPN/protun/tar.gz/1829b00a27071ae3a3ad3f6c791add88c5c6eaec",
+      "sha256": "d455fb7d719a6b52b22accf25b460a8de5b48e68198824278d6daf74db5a1696",
+      "into": "python-proton-vpn-api-core/dependencies/protun"
+    }
+  ],
+  "platform_features": "python,core,kill_switch,local_agent,telemetry"
+}

@@ -1,0 +1,16 @@
+[package]
+name = "spotty-proton-vpn-embedded"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Proton VPN's official Linux client library, embedded in Spotty"
+license = "GPL-3.0-or-later"
+
+[features]
+# Off by default: building it fetches Proton's pinned sources, compiles
+# Proton's Rust platform module and installs hash-locked Python wheels.
+bundled = []
+
+[dependencies]
+flate2 = "1"
+tar = "0.4"

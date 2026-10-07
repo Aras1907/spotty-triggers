@@ -103,6 +103,12 @@ pub enum Action {
     EnterMode(String),
     /// Open Spotty's Proton VPN popup for the installed VPN service.
     OpenProtonVpn,
+    /// Run an in-app Proton VPN action: `op` is "connect" or "disconnect",
+    /// `target` an encoded [`proton::VpnTarget`].
+    ProtonVpn {
+        op: String,
+        target: String,
+    },
     /// Remove an installed trigger by id.
     UninstallTrigger(String),
     /// Start a long-running package operation in the background. It keeps
@@ -724,14 +730,7 @@ pub fn search_mode(
         return bluetooth::search(rest);
     }
     if kw.id == "proton-vpn" {
-        return vec![SearchResult {
-            kind: ResultKind::System,
-            title: gettext("Open Proton VPN"),
-            subtitle: Some(gettext("Sign in, connect, or disconnect with Proton's official Linux CLI")),
-            icon: Some("network-vpn-symbolic".into()),
-            action: Action::OpenProtonVpn,
-            score: 100_000,
-        }];
+        return proton::vpn_search(rest, config);
     }
     if kw.id == "proton-calendar" {
         return proton::calendar_search(rest, config);
@@ -891,8 +890,8 @@ mod tests {
         let snapshot = Arc::new(RwLock::new(crate::index::Snapshot::default()));
 
         let rows = search_mode("vpn", "", &config, &snapshot);
-        assert_eq!(rows.len(), 1);
-        assert!(matches!(rows[0].action, Action::OpenProtonVpn));
+        // Connect rows need the embedded client; the window is always offered.
+        assert!(rows.iter().any(|row| matches!(row.action, Action::OpenProtonVpn)));
 
         config.uninstall_builtin("proton-vpn");
         assert!(search_mode("vpn", "", &config, &snapshot).is_empty());

@@ -45,7 +45,7 @@ a vulnerability.
 | [`triggers/updates.json`](triggers/updates.json) | Install from Store | Check and install updates |
 | [`triggers/dictionary.json`](triggers/dictionary.json) | `dict` | Look up a word definition |
 | [`triggers/translate.json`](triggers/translate.json) | `translate` | Translate text locally — detects the language, targets your system language |
-| [`triggers/proton-vpn.json`](triggers/proton-vpn.json) | `vpn` | Optional Proton VPN controls |
+| [`triggers/proton-vpn.json`](triggers/proton-vpn.json) | `vpn` | Proton VPN built in: sign in, pick a country and connect |
 | [`triggers/proton-calendar.json`](triggers/proton-calendar.json) | `cal` | Open Proton Calendar on today or any date |
 | [`triggers/proton-drive.json`](triggers/proton-drive.json) | `drive` | Open Proton Drive or search a synced Drive folder |
 
@@ -92,25 +92,23 @@ verification can use the included official Bridge window.
 For packaging, credentials, licensing and verification, see
 [the login package](proton-bridge-gui/README.md).
 
-## Proton VPN controls (optional integration)
+## Proton VPN (built into Spotty)
 
-Install **Proton VPN** from the Store's dedicated **Proton** section to add a
-native GTK4/libadwaita connection popup under
-**Settings → Search → Services and integrations**.
-It uses the official Proton VPN Linux CLI installed on the host for status,
-connect, disconnect and sign-out. Sign-in stays with Proton's CLI so its
-password, two-factor and security-key prompts remain under Proton's control.
-Spotty does not collect VPN credentials, implement a tunnel, or install system
-packages.
+Install **Proton VPN** from the Store's **Proton** section. Spotty includes
+Proton's official Linux VPN client library
+([`proton-vpn-embedded/`](proton-vpn-embedded/)), so no separate Proton app or
+CLI is needed. Sign in once in Spotty's Proton VPN window (two-factor codes
+supported); the password goes straight to Proton's client and is never stored.
 
-Install Proton's official Linux CLI separately using its
-[Linux installation guide](https://protonvpn.com/support/download-and-installation/linux).
-Proton officially supports the CLI on Fedora GNOME and says its CLI and GUI
-apps cannot run at the same time. In a Flatpak build, Spotty calls the host
-CLI through its existing host-command bridge. The CLI and host VPN services
-must be installed and authorized by the user. Uninstalling the Spotty
-integration leaves the Proton VPN package, account and active connection
-alone.
+The `vpn` trigger connects and disconnects from search: `vpn on` / `vpn off`,
+country suggestions as you type (`vpn ge` → 🇩🇪 Germany, 🇬🇪 Georgia…), cities
+from Proton's server list (`vpn zur` → Zurich), servers (`vpn CH#242`) and
+`vpn status`. The window also sets a preferred country and Proton's settings
+(protocol, NetShield, kill switch, VPN Accelerator, Moderate NAT, port
+forwarding, IPv6).
+
+Build Spotty with `--features proton-vpn` to include the client; see
+[`proton-vpn-embedded/README.md`](proton-vpn-embedded/README.md).
 
 ## Proton Calendar and Proton Drive (optional integrations)
 
