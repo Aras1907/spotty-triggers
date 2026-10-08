@@ -1,0 +1,17 @@
+{
+  "id": "proton-pass",
+  "name": "Proton Pass",
+  "word": "pass",
+  "description": "Proton Pass built into Spotty: search your vault and copy passwords, usernames and one-time codes",
+  "icon": "dialog-password-symbolic",
+  "shortcut": "",
+  "version": "1.0.0",
+  "author": "spotty",
+  "native": true,
+  "preinstalled": false,
+  "help": "Proton Pass, built into Spotty\n\nInstalling adds the `pass` trigger and a Proton Pass row under Settings → Search → Services and integrations. Spotty includes Proton's official Pass client, so no separate Proton app or CLI is needed.\n\nType `pass` and a few letters of an item's title (`pass git`). Enter copies the password; the best match also offers Copy username, Copy one-time code and Open website. Card items copy the card number or security code, notes copy their text, and other items open in Proton Pass.\n\nSigning in: if you are already signed in to Proton Calendar or Proton Drive in Spotty, installing Pass signs in with that same Proton session through Proton's own page, with no password to type. Otherwise Proton's sign-in page opens in Spotty's Proton window. Spotty never sees or stores your Proton password.\n\nPrivacy: Spotty loads only item titles into memory. Passwords, usernames, one-time codes and notes are read from Proton Pass at the moment you copy them, are marked as passwords on the clipboard (so Spotty's clipboard history skips them), and are cleared from the clipboard after 30 seconds. Vault items never appear in the everyday search. The client runs with its update check and telemetry switched off and keeps its key in your desktop keyring, which must be unlocked.\n\nUninstalling removes the trigger only; use Settings → Proton Pass → Sign out to remove the session.",
+  "action": {
+    "type": "native"
+  },
+  "category": "service"
+}

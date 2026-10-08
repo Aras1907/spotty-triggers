@@ -33,7 +33,6 @@ a vulnerability.
 |---|---|---|
 | [`triggers/files.json`](triggers/files.json) | `find` | Search all files and folders |
 | [`triggers/clipboard.json`](triggers/clipboard.json) | `clip` | Search clipboard history |
-| [`triggers/cmd.json`](triggers/cmd.json) | `app` | Install, uninstall, and manage apps |
 | [`triggers/run.json`](triggers/run.json) | `cmd` | Run a command |
 | [`triggers/emoji.json`](triggers/emoji.json) | `emoji` | Search emoji |
 | [`triggers/bluetooth.json`](triggers/bluetooth.json) | `bt` | Bluetooth devices |
@@ -46,8 +45,9 @@ a vulnerability.
 | [`triggers/dictionary.json`](triggers/dictionary.json) | `dict` | Look up a word definition |
 | [`triggers/translate.json`](triggers/translate.json) | `translate` | Translate text locally — detects the language, targets your system language |
 | [`triggers/proton-vpn.json`](triggers/proton-vpn.json) | `vpn` | Proton VPN built in: sign in, pick a country and connect |
-| [`triggers/proton-calendar.json`](triggers/proton-calendar.json) | `cal` | Open Proton Calendar on today or any date |
-| [`triggers/proton-drive.json`](triggers/proton-drive.json) | `drive` | Open Proton Drive or search a synced Drive folder |
+| [`triggers/proton-pass.json`](triggers/proton-pass.json) | `pass` | Proton Pass built in: search your vault, copy passwords, usernames and one-time codes |
+| [`triggers/proton-calendar.json`](triggers/proton-calendar.json) | `cal` | Proton Calendar built in: sign in once, jump to today, tomorrow, friday or any date |
+| [`triggers/proton-drive.json`](triggers/proton-drive.json) | `drive` | Proton Drive built in: sign in once, jump to trash, shared or photos, or search a synced folder |
 
 The six native result providers start uninstalled. Install one from the Store
 to add it to regular search. Then set an optional word or shortcut in Spotty
@@ -110,22 +110,74 @@ forwarding, IPv6).
 Build Spotty with `--features proton-vpn` to include the client; see
 [`proton-vpn-embedded/README.md`](proton-vpn-embedded/README.md).
 
+## One Proton sign-in for every Proton trigger
+
+Calendar, Drive and Pass's web sign-in share one private Proton web profile
+(`~/.local/share/spotty/proton-web`). Sign in once, in any of them, and every
+Proton integration you install later finds you already signed in:
+
+- **Calendar and Drive** open straight into your account.
+- **Pass** installs and starts its sign-in through that same session; Proton's
+  page may ask you to approve it, but there is no password to type.
+- **Proton VPN and Proton Mail Bridge** are separate clients with their own
+  sign-in. Spotty never keeps a Proton password, so it can't sign them in for
+  you; sign in to each once.
+
+Spotty only remembers *that* you are signed in (an empty marker file), never
+the session or any credential. **Sign out** in any Proton web app's settings
+erases the web profile and signs Pass out too.
+
+## Proton Pass (built into Spotty)
+
+Install **Proton Pass** from the Store's **Proton** section. Spotty includes
+Proton's official Pass client ([`proton-pass-embedded/`](proton-pass-embedded/)),
+so no separate Proton app or CLI is needed.
+
+`pass <title>` searches your vault by item title, like Raycast's password
+manager extensions:
+
+- **Enter** on a login copies the **password**; the best match also lists
+  *Copy username*, *Copy one-time code* and *Open website*.
+- Cards copy the card number (and security code), notes copy their text, and
+  other item types open in Proton Pass.
+- Secrets are marked as passwords on the clipboard, so Spotty's clipboard
+  history skips them, and are cleared 30 seconds later.
+- Vault items never show up in the everyday search.
+
+Spotty loads only item titles (Proton's secret-free listing). Everything else
+is read at the moment you copy it and wiped from Spotty's memory right after.
+Sign-in is Proton's web sign-in (see above); the session key lives in your
+desktop keyring, which must be unlocked. Pass needs a paid Proton Pass plan.
+Build Spotty with `--features proton-pass` to include the client; see
+[`proton-pass-embedded/README.md`](proton-pass-embedded/README.md).
+
 ## Proton Calendar and Proton Drive (optional integrations)
 
 Install **Proton Calendar** or **Proton Drive** from the Store's **Proton**
 section. Each adds a search trigger and a **Settings** button in the Store and
 under **Settings → Search → Services and integrations**.
 
-- `cal` opens calendar.proton.me on today. `cal 2026-10-24`, `cal tomorrow`
-  and `cal yesterday` jump to that day. Settings picks the default view (day,
-  week or month) and the Proton account slot (`/u/N`).
-- `drive` opens drive.proton.me. Settings picks the account slot and an
-  optional local folder already synced with Proton Drive (for example with
-  rclone). With a folder set, `drive <name>` searches names inside it.
+- `cal` opens Proton Calendar on today in Spotty's Proton window. Say when you
+  mean to jump there: `cal tomorrow`, `cal friday`, `cal next week`,
+  `cal next month`, `cal +3d`, `cal in 2 weeks`, `cal 24 oct` or
+  `cal 2026-10-24`. `cal week` and `cal month` open today in that view.
+  Settings picks the default view (day, week or month) and the Proton account
+  slot (`/u/N`).
+- `drive` opens Proton Drive in Spotty's Proton window (downloads go to the
+  Downloads folder). `drive trash`, `drive shared`, `drive with-me`,
+  `drive photos` and `drive devices` jump to those places. Settings picks the
+  account slot and an optional local folder already synced with Proton Drive
+  (for example with rclone). With a folder set, `drive <name>` searches names
+  inside it.
 
-Proton ships no Linux desktop client for either, so both open Proton's web
-apps in the default browser. Spotty never handles Proton credentials and does
-not sync files.
+Proton ships no Linux desktop client for either, so Spotty shows Proton's own
+web apps in a window of its own, rendered by the system's WebKitGTK 6 (loaded
+at runtime, so building Spotty needs no WebKit development files). Sign in
+once on Proton's own page in that window, or with **Sign in** in either app's
+settings, until you choose **Sign out**. Spotty never sees the password.
+Without WebKitGTK 6 both open in the default browser. Spotty can't read your
+events or files through the web apps, so `cal` and `drive` open the right page
+rather than listing them.
 
 ## Repository layout
 
@@ -292,7 +344,7 @@ uninstall.
 
 - `id` must be unique, lowercase, and use only letters, digits, `_`, `-`, `.`
 - `word` is the trigger text — it must not collide with a built-in trigger
-  (`find`, `clip`, `app`, `cmd`, `emoji`, `bt`) or another trigger
+  (`find`, `clip`, `cmd`, `emoji`, `bt`) or another trigger
 - keep `name` short — it's what shows on the trigger row
 
 ## Submitting a trigger

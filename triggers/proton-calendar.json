@@ -2,14 +2,14 @@
   "id": "proton-calendar",
   "name": "Proton Calendar",
   "word": "cal",
-  "description": "Open Proton Calendar on today or any date",
+  "description": "Proton Calendar built into Spotty: sign in once, jump to today, tomorrow, friday or any date",
   "icon": "x-office-calendar-symbolic",
   "shortcut": "",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "author": "spotty",
   "native": true,
   "preinstalled": false,
-  "help": "Optional Proton Calendar trigger\n\nInstalling adds the `cal` trigger and a Proton Calendar row under Settings → Search → Services and integrations. `cal` opens calendar.proton.me on today; type a date such as `cal 2026-10-24`, `cal tomorrow` or `cal yesterday` to jump straight to that day.\n\nSettings chooses the default view (day, week or month) and which signed-in Proton account to open, matching the account order in Proton's account switcher.\n\nProton has no Linux desktop calendar client, so Spotty opens Proton's web app in your default browser. Sign-in happens on Proton's website; Spotty never sees or stores Proton credentials or calendar data. Uninstalling removes the trigger only.",
+  "help": "Proton Calendar, built into Spotty\n\nInstalling adds the `cal` trigger and a Proton Calendar row under Settings → Search → Services and integrations. `cal` opens Proton Calendar on today in Spotty's own Proton window; type when you mean to jump straight there: `cal tomorrow`, `cal friday`, `cal next week`, `cal next month`, `cal +3d`, `cal in 2 weeks`, `cal 24 oct` or `cal 2026-10-24`. `cal week` or `cal month` opens today in that view.\n\nSign in once on Proton's own sign-in page inside that window (two-factor works as on the web). Spotty keeps the session in its private Proton web profile, shared with Proton Drive and Proton Pass, so you stay signed in and any Proton app you install later finds you already signed in; Spotty never sees or stores your password. Settings → Proton Calendar has Sign in and Sign out, the default view (day, week or month) and which Proton account to open.\n\nProton has no Linux desktop calendar app, so Spotty shows Proton's own web app using the system's WebKitGTK; without WebKitGTK it opens in your browser. Uninstalling removes the trigger only.",
   "action": {
     "type": "native"
   },

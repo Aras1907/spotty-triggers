@@ -1,0 +1,9 @@
+{
+  "comment": "Proton Pass CLI source, pinned by commit (tag 2.4.2) and archive SHA-256. Dependencies are pinned by pass-cli.Cargo.lock, which cargo must accept with --locked.",
+  "source": {
+    "name": "pass-cli",
+    "version": "2.4.2",
+    "url": "https://codeload.github.com/protonpass/pass-cli/tar.gz/7ae51e52818bca8df905988e4b149d43d31d4c83",
+    "sha256": "b1515b275bea7598d6f32433455ff540142cbacaaebfa070a550796b072ebd7a"
+  }
+}

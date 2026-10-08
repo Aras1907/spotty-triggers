@@ -1,0 +1,15 @@
+[package]
+name = "spotty-proton-pass-embedded"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Proton's official Pass client, embedded in Spotty"
+license = "GPL-3.0-or-later"
+
+[features]
+# Off by default: building it fetches Proton's pinned pass-cli source and
+# compiles it (see README.md).
+bundled = []
+
+[dependencies]
+flate2 = "1"

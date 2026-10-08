@@ -18,6 +18,22 @@ available at `../PRIVACY_AND_SECURITY.md`.
   TLS. It does not persist form credentials. Bridge owns the saved account,
   encrypted vault, keyring, and network connection to Proton. The companion
   uses Bridge's internal 3.x API; live account login remains unverified.
+- Proton Pass runs Proton's official `pass-cli`, built from a source archive
+  pinned by commit and SHA-256 and embedded in Spotty
+  ([details](proton-pass-embedded/README.md)). It runs with a cleared
+  environment, its own session folder, its key in the desktop keyring and its
+  update check and telemetry disabled. Spotty keeps only item titles in memory
+  and never writes them to disk; passwords, usernames, one-time codes and notes
+  are read when copied, marked as passwords on the clipboard, wiped from
+  Spotty's buffers and cleared from the clipboard after 30 seconds. Sign-in is
+  Proton's web sign-in in Spotty's Proton window; Spotty never sees the
+  password. A running desktop can still read the clipboard during those 30
+  seconds, and GTK keeps a copy of the text until it is cleared. The client's
+  dependencies come from Proton's Cargo registry and GitHub, pinned by
+  `pass-cli.Cargo.lock`; they are not independently audited here.
+- Spotty remembers that a Proton web session exists with an empty marker file
+  so a newly installed Proton integration can use it; the session itself stays
+  in the private WebKit profile (`~/.local/share/spotty/proton-web`).
 - Web manifests support HTTP(S) links. Activating one sends the query to its
   website. Translation uses the configured LibreTranslate endpoint, which is
   local by default but can be remote. Dictionary/currency backends can also

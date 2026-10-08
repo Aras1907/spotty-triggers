@@ -12,10 +12,11 @@ static CATALOG: LazyLock<Vec<RepoTrigger>> = LazyLock::new(|| {
 
 /// Proton integrations that are both a Store service and an optional search
 /// trigger: (id, word, icon, search description).
-pub const PROTON_TRIGGERS: [(&str, &str, &str, &str); 3] = [
+pub const PROTON_TRIGGERS: [(&str, &str, &str, &str); 4] = [
     ("proton-vpn", "vpn", "network-vpn-symbolic", "Open Proton VPN sign-in and connection controls"),
-    ("proton-calendar", "cal", "x-office-calendar-symbolic", "Open Proton Calendar on a date"),
-    ("proton-drive", "drive", "folder-remote-symbolic", "Open Proton Drive or search its synced folder"),
+    ("proton-pass", "pass", "dialog-password-symbolic", "Search your Proton Pass vault and copy passwords"),
+    ("proton-calendar", "cal", "x-office-calendar-symbolic", "Proton Calendar in Spotty, on any date"),
+    ("proton-drive", "drive", "folder-remote-symbolic", "Proton Drive in Spotty, or search its synced folder"),
 ];
 
 fn proton_trigger(id: &str) -> Option<&'static (&'static str, &'static str, &'static str, &'static str)> {
@@ -24,8 +25,10 @@ fn proton_trigger(id: &str) -> Option<&'static (&'static str, &'static str, &'st
 
 pub fn supports_native(id: &str) -> bool {
     match id {
-        // VPN drives Proton's Linux CLI; Calendar and Drive open the web apps.
+        // VPN and Pass run Proton's official clients built into Spotty; Calendar and Drive
+        // open Proton's web apps in Spotty.
         "proton-vpn" => cfg!(target_os = "linux"),
+        "proton-pass" => cfg!(target_os = "linux"),
         "proton-calendar" | "proton-drive" => true,
         _ => CATALOG.iter().any(|entry| entry.native && !entry.is_service() && entry.id == id),
     }
@@ -87,7 +90,6 @@ pub fn display_name(id: &str) -> &'static str {
         match id {
             "files" => "Find",
             "clipboard" => "Clip",
-            "cmd" => "App",
             "run" => "Cmd",
             "emoji" => "Emoji",
             "music" => "Music",
@@ -99,6 +101,7 @@ pub fn display_name(id: &str) -> &'static str {
             "convert" => "Convert",
             "updates" => "Updates",
             "proton-vpn" => "Proton VPN",
+            "proton-pass" => "Proton Pass",
             "proton-calendar" => "Proton Calendar",
             "proton-drive" => "Proton Drive",
             _ => "Trigger",
@@ -152,6 +155,13 @@ mod service_tests {
         let keyword = command_keyword("proton-vpn").expect("VPN trigger metadata");
         assert_eq!(keyword.word, "vpn");
         assert!(command_keywords().iter().all(|item| item.id != "proton-vpn"));
+    }
+
+    #[test]
+    fn proton_pass_has_a_keyword_but_is_not_preinstalled() {
+        assert!(supports_native("proton-pass"));
+        assert_eq!(command_keyword("proton-pass").expect("Proton Pass trigger metadata").word, "pass");
+        assert!(command_keywords().iter().all(|item| item.id != "proton-pass"));
     }
 
     #[test]

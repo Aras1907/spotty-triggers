@@ -23,6 +23,7 @@ pub mod dictionary;
 pub mod emoji;
 pub mod files;
 pub mod jobs;
+pub mod pass;
 pub mod proton;
 pub mod run;
 pub mod settings_panels;
@@ -106,6 +107,17 @@ pub enum Action {
     /// Run an in-app Proton VPN action: `op` is "connect" or "disconnect",
     /// `target` an encoded [`proton::VpnTarget`].
     ProtonVpn {
+        op: String,
+        target: String,
+    },
+    /// Open a Proton web app (Calendar, Drive) in Spotty's Proton window,
+    /// signed in with Spotty's own Proton web profile.
+    OpenProtonWeb(String),
+    /// Hand over a Proton Pass vault item's field (or run a sign-in action):
+    /// `op` is "password", "username", "totp", "card", "cvv", "note",
+    /// "website", "signin" or "refresh"; `target` is `share_id/item_id`.
+    /// Never carries a secret itself.
+    ProtonPass {
         op: String,
         target: String,
     },
@@ -449,9 +461,10 @@ fn regular_trigger_sources(
     let mut out = Vec::new();
     for kw in config.command_keywords.iter().chain(owned.iter()) {
         if kw.is_result()
-            || kw.id == "cmd"
             || kw.word.is_empty()
             || matches!(kw.id.as_str(), "clipboard" | "dictionary")
+            // Vault titles never join the everyday search.
+            || kw.id == "proton-pass"
             || !config.keyword_usable(kw)
             || !config.in_regular_search(&kw.id)
         {
@@ -732,6 +745,9 @@ pub fn search_mode(
     if kw.id == "proton-vpn" {
         return proton::vpn_search(rest, config);
     }
+    if kw.id == "proton-pass" {
+        return pass::search(rest);
+    }
     if kw.id == "proton-calendar" {
         return proton::calendar_search(rest, config);
     }
@@ -743,14 +759,6 @@ pub fn search_mode(
     }
     if kw.id == "run" {
         return run::search(rest);
-    }
-    if kw.id == "cmd" {
-        let snap_guard = snap_lock.read().unwrap();
-        return merge_pinned(
-            cmd::search(rest, config, &snap_guard.apps),
-            &rl,
-            pinned,
-        );
     }
     if kw.id == "translate" {
         // The translate trigger: live, local translation — target follows

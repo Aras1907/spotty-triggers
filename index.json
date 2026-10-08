@@ -24,18 +24,6 @@
     "preinstalled": true
   },
   {
-    "id": "cmd",
-    "name": "App Management",
-    "word": "app",
-    "description": "Install, uninstall, and manage apps",
-    "icon": "application-x-executable-symbolic",
-    "version": "1.0.0",
-    "author": "spotty",
-    "shortcut": "Super+Ctrl+A",
-    "native": true,
-    "preinstalled": true
-  },
-  {
     "id": "run",
     "name": "Command",
     "word": "cmd",
@@ -190,12 +178,25 @@
     "category": "service"
   },
   {
+    "id": "proton-pass",
+    "name": "Proton Pass",
+    "word": "pass",
+    "description": "Proton Pass built into Spotty: search your vault and copy passwords, usernames and one-time codes",
+    "icon": "dialog-password-symbolic",
+    "version": "1.0.0",
+    "author": "spotty",
+    "shortcut": "",
+    "native": true,
+    "preinstalled": false,
+    "category": "service"
+  },
+  {
     "id": "proton-calendar",
     "name": "Proton Calendar",
     "word": "cal",
-    "description": "Open Proton Calendar on today or any date",
+    "description": "Proton Calendar built into Spotty: sign in once, jump to today, tomorrow, friday or any date",
     "icon": "x-office-calendar-symbolic",
-    "version": "1.0.0",
+    "version": "1.2.0",
     "author": "spotty",
     "shortcut": "",
     "native": true,
@@ -206,9 +207,9 @@
     "id": "proton-drive",
     "name": "Proton Drive",
     "word": "drive",
-    "description": "Open Proton Drive or search a locally synced Drive folder",
+    "description": "Proton Drive built into Spotty: sign in once, jump to trash, shared or photos, or search a synced folder",
     "icon": "folder-remote-symbolic",
-    "version": "1.0.0",
+    "version": "1.2.0",
     "author": "spotty",
     "shortcut": "",
     "native": true,

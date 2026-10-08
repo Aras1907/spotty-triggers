@@ -124,6 +124,7 @@ pub struct PreviewPane {
     text: gtk::TextView,
     iicon: gtk::Image,
     imetadata: gtk::Grid,
+    metadata_box: gtk::Box,
     ihint: gtk::Label,
     // Music overview page widgets.
     mcover: gtk::Picture,
@@ -199,6 +200,8 @@ impl PreviewPane {
         let stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
             .transition_duration(100)
+            .vhomogeneous(false)
+            .hhomogeneous(false)
             .vexpand(true)
             .hexpand(true)
             .build();
@@ -223,7 +226,7 @@ impl PreviewPane {
             .can_shrink(true)
             .content_fit(gtk::ContentFit::Contain)
             .width_request(320)
-            .height_request(240)
+            .height_request(130)
             .hexpand(true)
             .vexpand(true)
             .build();
@@ -231,11 +234,12 @@ impl PreviewPane {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Never)
             .max_content_width(320)
-            .max_content_height(240)
+            .max_content_height(320)
             .min_content_width(320)
-            .min_content_height(240)
+            .min_content_height(130)
             .propagate_natural_width(false)
             .propagate_natural_height(false)
+            .vexpand(true)
             .child(&image)
             .build();
         let image_caption = gtk::Label::builder()
@@ -247,6 +251,7 @@ impl PreviewPane {
             .build();
         let image_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
             .build();
         image_box.append(&image_clip);
         image_box.append(&image_caption);
@@ -291,6 +296,7 @@ impl PreviewPane {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .max_content_height(200)
             .propagate_natural_height(true)
+            .vexpand(true)
             .build();
         stack.add_named(&text_scroll, Some("text"));
 
@@ -299,26 +305,29 @@ impl PreviewPane {
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
             .halign(gtk::Align::Fill)
-            .valign(gtk::Align::Start)
-            .vexpand(true)
+            .valign(gtk::Align::Center)
+            .vexpand(false)
             .margin_start(12)
             .margin_end(12)
             .margin_top(16)
             .build();
-        let iicon = gtk::Image::builder().pixel_size(64).halign(gtk::Align::Center).build();
+        // Keep the generic file/folder preview visually substantial within
+        // the expandable preview pane above the metadata.
+        let iicon = gtk::Image::builder()
+            .pixel_size(144)
+            .halign(gtk::Align::Center)
+            .build();
         let metadata_heading = gtk::Label::builder()
             .label(gettext("Metadata"))
             .halign(gtk::Align::Start)
-            .css_classes(["heading"])
+            .css_classes(["title-4"])
             .build();
         let imetadata = gtk::Grid::builder()
             .column_spacing(16)
-            .row_spacing(8)
+            .row_spacing(4)
             .hexpand(true)
             .build();
         ib.append(&iicon);
-        ib.append(&metadata_heading);
-        ib.append(&imetadata);
         let ihint = gtk::Label::builder()
             .css_classes(["caption", "dim-label"])
             .halign(gtk::Align::Start)
@@ -326,6 +335,23 @@ impl PreviewPane {
             .build();
         ib.append(&ihint);
         stack.add_named(&ib, Some("info"));
+
+        // Keep filesystem metadata below the content preview. This is shown
+        // for Find results, and also for files that have no renderable preview.
+        let metadata_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(10)
+            .margin_bottom(8)
+            .hexpand(true)
+            .halign(gtk::Align::Fill)
+            .valign(gtk::Align::Start)
+            .visible(false)
+            .build();
+        metadata_box.append(&metadata_heading);
+        metadata_box.append(&imetadata);
 
         // Music overview: large cover art, title, artist + source badge, and
         // live view/like statistics.
@@ -465,6 +491,7 @@ impl PreviewPane {
             .build();
         container.append(&clip_caption);
         container.append(&stack);
+        container.append(&metadata_box);
         stack.set_visible_child_name("empty");
 
         // Navigation bar for multi-page documents (PPTX slides, PDF pages, etc.)
@@ -505,6 +532,7 @@ impl PreviewPane {
             text,
             iicon,
             imetadata,
+            metadata_box,
             ihint,
             mcover,
             mtitle,
@@ -584,6 +612,8 @@ impl PreviewPane {
         self.pending.set(false);
         self.current_stamp.set((0, 0));
         self.clip_caption.set_visible(false);
+        self.metadata_box.set_visible(false);
+        self.nav_box.set_visible(false);
         self.stack.set_visible_child_name("empty");
     }
 
@@ -615,6 +645,7 @@ impl PreviewPane {
 
     /// Show raw text (e.g. a clipboard text entry) in full, scrollable.
     pub fn show_text(&self, s: &str) {
+        self.metadata_box.set_visible(false);
         *self.current.borrow_mut() = std::path::PathBuf::new();
         self.current_stamp.set((0, 0)); // not a path preview
         self.stop_video();
@@ -626,6 +657,7 @@ impl PreviewPane {
     /// Show what an update run will do: the package list as a libadwaita
     /// boxed list.
     pub fn show_update(&self, title: &str, subtitle: &str, packages: &[String]) {
+        self.metadata_box.set_visible(false);
         self.stop_video();
         self.current_stamp.set((0, 0));
         *self.current.borrow_mut() = std::path::PathBuf::new();
@@ -665,6 +697,7 @@ impl PreviewPane {
     /// case the current marker is left as that path so the late download can
     /// verify it's still the row being previewed.
     pub fn show_help(&self, help: &str, image_path: Option<&Path>) {
+        self.metadata_box.set_visible(false);
         self.stop_video();
         self.current_stamp.set((0, 0)); // not a path preview
         self.displayed.set(true);
@@ -686,6 +719,15 @@ impl PreviewPane {
     }
 
     pub fn show_path(&self, p: &Path) {
+        if !p.exists() {
+            return self.clear();
+        }
+        // Metadata belongs to the selected path, independently of whether
+        // its content can be rendered or a preview is already cached.
+        self.populate_metadata(p);
+        if *self.current.borrow() != p {
+            self.nav_box.set_visible(false);
+        }
         self.show_path_inner(p, false);
     }
 
@@ -807,6 +849,9 @@ impl PreviewPane {
             return; // unchanged
         }
         self.current_stamp.set(st);
+        if self.metadata_box.is_visible() {
+            self.populate_metadata(&p);
+        }
 
         // Multi-page doc showing a page of ITSELF: re-render just that page
         // (disk cache is keyed by mtime → this renders fresh) so the user's
@@ -1148,6 +1193,18 @@ impl PreviewPane {
         } else {
             self.iicon.set_icon_name(Some(info_icon_for(p)));
         }
+        self.populate_metadata(p);
+        self.ihint.set_text(if is_dir {
+            "Enter — open folder · Ctrl+Enter — open in terminal"
+        } else {
+            "Enter — open with default app · Ctrl+Enter — open containing folder in terminal"
+        });
+        self.stack.set_visible_child_name("info");
+    }
+
+    fn populate_metadata(&self, p: &Path) {
+        self.metadata_box.set_visible(true);
+        let is_dir = p.is_dir();
         while let Some(child) = self.imetadata.first_child() {
             self.imetadata.remove(&child);
         }
@@ -1190,28 +1247,22 @@ impl PreviewPane {
             let key = gtk::Label::builder()
                 .label(&label)
                 .halign(gtk::Align::Start)
-                .valign(gtk::Align::Start)
+                .valign(gtk::Align::Center)
                 .css_classes(["caption", "dim-label"])
                 .build();
             let value = gtk::Label::builder()
                 .label(&value)
                 .halign(gtk::Align::Start)
-                .valign(gtk::Align::Start)
+                .valign(gtk::Align::Center)
                 .hexpand(true)
                 .wrap(true)
                 .selectable(true)
                 .max_width_chars(28)
-                .ellipsize(pango::EllipsizeMode::Middle)
+                .css_classes(["body"])
                 .build();
             self.imetadata.attach(&key, 0, row as i32, 1, 1);
             self.imetadata.attach(&value, 1, row as i32, 1, 1);
         }
-        self.ihint.set_text(if is_dir {
-            "Ctrl+Enter — open in terminal"
-        } else {
-            "Enter — open with default app"
-        });
-        self.stack.set_visible_child_name("info");
     }
 }
 

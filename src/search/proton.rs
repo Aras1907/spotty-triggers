@@ -1,8 +1,9 @@
 //! Proton VPN, Proton Calendar and Proton Drive triggers. VPN drives Proton's
-//! official Linux CLI. Proton ships no Linux desktop client for Calendar or
-//! Drive, so those open Proton's own web apps; Drive can also search a local
-//! folder the user already syncs (for example with rclone). Spotty never sees
-//! Proton credentials: sign-in stays with Proton.
+//! official Linux client library built into Spotty. Proton ships no Linux
+//! desktop client for Calendar or Drive, so those open Proton's own web apps
+//! inside Spotty (signed in once in Spotty's Proton window); Drive can also
+//! search a local folder the user already syncs (for example with rclone).
+//! Spotty never sees Proton passwords: sign-in happens on Proton's own page.
 use super::{Action, ResultKind, SearchResult};
 use crate::config::Config;
 use crate::i18n::gettext;
@@ -36,6 +37,19 @@ pub fn drive_url(slot: u32) -> String {
     format!("https://drive.proton.me/u/{}/", account(slot))
 }
 
+/// Places in Proton Drive's web app a few letters away: (word, title, path).
+pub const DRIVE_PLACES: [(&str, &str, &str); 5] = [
+    ("shared", "Shared by me", "shared-urls"),
+    ("with-me", "Shared with me", "shared-with-me"),
+    ("photos", "Photos", "photos"),
+    ("devices", "Computers", "devices"),
+    ("trash", "Trash", "trash"),
+];
+
+pub fn drive_place_url(slot: u32, path: &str) -> String {
+    format!("https://drive.proton.me/u/{}/{path}", account(slot))
+}
+
 fn today() -> Option<glib::DateTime> {
     glib::DateTime::now_local().ok()
 }
@@ -44,56 +58,211 @@ fn ymd(date: &glib::DateTime) -> (i32, u32, u32) {
     (date.year(), date.month() as u32, date.day_of_month() as u32)
 }
 
-/// "today", "tomorrow", "yesterday" or an ISO date (2026-10-06).
-fn parse_date(query: &str) -> Option<(i32, u32, u32)> {
-    let q = query.trim().to_lowercase();
-    let offset = match q.as_str() {
-        "today" => Some(0),
-        "tomorrow" => Some(1),
-        "yesterday" => Some(-1),
-        _ => None,
+/// Where a calendar query points: a day, and optionally a view of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct When {
+    pub date: (i32, u32, u32),
+    pub view: Option<&'static str>,
+}
+
+const WEEKDAYS: [(&str, &str); 7] = [
+    ("monday", "mon"), ("tuesday", "tue"), ("wednesday", "wed"), ("thursday", "thu"),
+    ("friday", "fri"), ("saturday", "sat"), ("sunday", "sun"),
+];
+
+const MONTHS: [(&str, &str); 12] = [
+    ("january", "jan"), ("february", "feb"), ("march", "mar"), ("april", "apr"),
+    ("may", "may"), ("june", "jun"), ("july", "jul"), ("august", "aug"),
+    ("september", "sep"), ("october", "oct"), ("november", "nov"), ("december", "dec"),
+];
+
+/// Words `cal` completes as you type (the ghost text).
+pub const CALENDAR_WORDS: [&str; 13] = [
+    "today", "tomorrow", "yesterday", "monday", "tuesday", "wednesday", "thursday", "friday",
+    "saturday", "sunday", "week", "month", "day",
+];
+
+fn weekday_number(word: &str) -> Option<i32> {
+    WEEKDAYS
+        .iter()
+        .position(|(long, short)| word == *long || word == *short)
+        .map(|index| index as i32 + 1)
+}
+
+fn month_number(word: &str) -> Option<i32> {
+    MONTHS
+        .iter()
+        .position(|(long, short)| word == *long || word == *short || (word.len() >= 3 && long.starts_with(word)))
+        .map(|index| index as i32 + 1)
+}
+
+/// "+3", "3d", "in 3 days", "2 weeks" → a day offset.
+fn parse_offset(words: &[&str]) -> Option<i64> {
+    let words: Vec<&str> = if words.first() == Some(&"in") { words[1..].to_vec() } else { words.to_vec() };
+    let (number, unit) = match words.as_slice() {
+        [single] => match single.find(|c: char| !(c.is_ascii_digit() || c == '+' || c == '-')) {
+            Some(split) => (&single[..split], &single[split..]),
+            // "+3" alone means days.
+            None if single.starts_with(['+', '-']) => (*single, "d"),
+            None => return None,
+        },
+        [number, unit] => (*number, *unit),
+        _ => return None,
     };
-    if let Some(days) = offset {
-        return today().and_then(|now| now.add_days(days).ok()).map(|date| ymd(&date));
-    }
-    let mut parts = q.split('-');
-    let y = parts.next()?.parse::<i32>().ok()?;
-    let m = parts.next()?.parse::<i32>().ok()?;
-    let d = parts.next()?.parse::<i32>().ok()?;
-    if parts.next().is_some() || !(1..=9999).contains(&y) {
+    let count: i64 = number.trim_start_matches('+').parse().ok()?;
+    if count.abs() > 3650 {
         return None;
     }
-    // glib validates the day against the month (and leap years).
-    glib::DateTime::from_local(y, m, d, 0, 0, 0.0).ok().map(|date| ymd(&date))
+    match unit {
+        "d" | "day" | "days" => Some(count),
+        "w" | "wk" | "week" | "weeks" => Some(count * 7),
+        _ => None,
+    }
+}
+
+/// What `query` asks the calendar for, relative to `now`: "today",
+/// "tomorrow", "friday", "next week", "in 3 days", "+2w", "month",
+/// "24 oct", "oct 24 2027" or an ISO date (2026-10-06).
+pub fn parse_when(query: &str, now: &glib::DateTime) -> Option<When> {
+    let lower = query.trim().to_lowercase();
+    if lower.is_empty() {
+        return None;
+    }
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    let day = |offset: i64| now.add_days(offset as i32).ok().map(|d| ymd(&d));
+    let at = |date: Option<(i32, u32, u32)>, view| date.map(|date| When { date, view });
+
+    match words.as_slice() {
+        ["today" | "now"] => return at(day(0), None),
+        ["tomorrow" | "tmrw" | "tom"] => return at(day(1), None),
+        ["yesterday"] => return at(day(-1), None),
+        ["day"] => return at(day(0), Some("day")),
+        ["week"] | ["this", "week"] => return at(day(0), Some("week")),
+        ["month"] | ["this", "month"] => return at(day(0), Some("month")),
+        ["next", "week"] => return at(day(7), Some("week")),
+        ["last" | "previous", "week"] => return at(day(-7), Some("week")),
+        ["next", "month"] | ["last" | "previous", "month"] => {
+            let forward = words[0] == "next";
+            let first = glib::DateTime::from_local(now.year(), now.month(), 1, 0, 0, 0.0).ok()?;
+            let moved = first.add_months(if forward { 1 } else { -1 }).ok()?;
+            return Some(When { date: ymd(&moved), view: Some("month") });
+        }
+        _ => {}
+    }
+
+    // "friday", "next friday", "this friday", "on fri".
+    let weekday_words: &[&str] = match words.as_slice() {
+        ["next" | "this" | "on", rest @ ..] if rest.len() == 1 => rest,
+        other => other,
+    };
+    if let [word] = weekday_words {
+        if let Some(target) = weekday_number(word) {
+            let today = now.day_of_week();
+            let mut ahead = (target - today).rem_euclid(7) as i64;
+            // A bare weekday means the coming one; "this friday" may be today.
+            if ahead == 0 && words[0] != "this" {
+                ahead = 7;
+            }
+            return at(day(ahead), None);
+        }
+    }
+
+    if let Some(offset) = parse_offset(&words) {
+        return at(day(offset), None);
+    }
+
+    // ISO date.
+    if words.len() == 1 && lower.contains('-') {
+        let mut parts = lower.split('-');
+        let y = parts.next()?.parse::<i32>().ok()?;
+        let m = parts.next()?.parse::<i32>().ok()?;
+        let d = parts.next()?.parse::<i32>().ok()?;
+        if parts.next().is_some() || !(1..=9999).contains(&y) {
+            return None;
+        }
+        // glib validates the day against the month (and leap years).
+        return glib::DateTime::from_local(y, m, d, 0, 0, 0.0).ok().map(|date| When { date: ymd(&date), view: None });
+    }
+
+    // "24 oct", "24 oct 2027", "oct 24", "oct 24 2027".
+    // "24" or "1st": a day number, optionally with an ordinal suffix.
+    let day_like = |word: &str| {
+        let digits = word.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+        let suffix = &word[digits.len()..];
+        !digits.is_empty()
+            && digits.chars().all(|c| c.is_ascii_digit())
+            && matches!(suffix, "" | "st" | "nd" | "rd" | "th")
+    };
+    let (day_word, month_word, year_word) = match words.as_slice() {
+        [a, b] if day_like(a) => (*a, *b, None),
+        [a, b] if day_like(b) => (*b, *a, None),
+        [a, b, y] if day_like(a) => (*a, *b, Some(*y)),
+        [a, b, y] if day_like(b) => (*b, *a, Some(*y)),
+        _ => return None,
+    };
+    let month = month_number(month_word)?;
+    let day_of_month = day_word.trim_end_matches(|c: char| c.is_ascii_alphabetic()).parse::<i32>().ok()?;
+    let year = match year_word {
+        Some(y) => y.parse::<i32>().ok().filter(|y| (1..=9999).contains(y))?,
+        None => now.year(),
+    };
+    glib::DateTime::from_local(year, month, day_of_month, 0, 0, 0.0)
+        .ok()
+        .map(|date| When { date: ymd(&date), view: None })
+}
+
+fn calendar_row(title: String, subtitle: String, url: String, score: i32) -> SearchResult {
+    SearchResult {
+        kind: ResultKind::Web,
+        title,
+        subtitle: Some(subtitle),
+        icon: Some("x-office-calendar-symbolic".into()),
+        action: Action::OpenProtonWeb(url),
+        score,
+    }
 }
 
 pub fn calendar_search(query: &str, config: &Config) -> Vec<SearchResult> {
     let slot = config.proton_calendar_account;
-    let view = calendar_view(config);
+    let default_view = calendar_view(config);
+    let now = today();
     let mut rows = Vec::new();
-    if let Some(date) = parse_date(query) {
-        rows.push(SearchResult {
-            kind: ResultKind::Web,
-            title: gettext("Open {date} in Proton Calendar")
-                .replace("{date}", &format!("{:04}-{:02}-{:02}", date.0, date.1, date.2)),
-            subtitle: Some(gettext("calendar.proton.me · {view} view").replace("{view}", view)),
-            icon: Some("x-office-calendar-symbolic".into()),
-            action: Action::OpenUrl(calendar_url(slot, view, Some(date))),
-            score: 100_001,
-        });
+    if let Some(when) = now.as_ref().and_then(|now| parse_when(query, now)) {
+        let view = when.view.unwrap_or(default_view);
+        let (y, m, d) = when.date;
+        let name = glib::DateTime::from_local(y, m as i32, d as i32, 0, 0, 0.0)
+            .ok()
+            .and_then(|date| date.format("%A %-d %B %Y").ok())
+            .map(|text| text.to_string())
+            .unwrap_or_else(|| format!("{y:04}-{m:02}-{d:02}"));
+        rows.push(calendar_row(
+            gettext("Open {date} in Proton Calendar").replace("{date}", &name),
+            gettext("Proton Calendar in Spotty · {view} view").replace("{view}", view),
+            calendar_url(slot, view, Some(when.date)),
+            100_001,
+        ));
     }
-    rows.push(SearchResult {
-        kind: ResultKind::Web,
-        title: gettext("Open Proton Calendar"),
-        subtitle: Some(if query.trim().is_empty() {
-            gettext("Today in the {view} view · type a date, today or tomorrow to jump").replace("{view}", view)
+    let today_date = now.as_ref().map(ymd);
+    rows.push(calendar_row(
+        gettext("Open Proton Calendar"),
+        if query.trim().is_empty() {
+            gettext("Today in the {view} view · try tomorrow, friday, next week, 24 oct or +3d").replace("{view}", default_view)
         } else {
-            gettext("Today in the {view} view").replace("{view}", view)
-        }),
-        icon: Some("x-office-calendar-symbolic".into()),
-        action: Action::OpenUrl(calendar_url(slot, view, today().map(|now| ymd(&now)))),
-        score: 100_000,
-    });
+            gettext("Today in the {view} view").replace("{view}", default_view)
+        },
+        calendar_url(slot, default_view, today_date),
+        100_000,
+    ));
+    if query.trim().is_empty() {
+        for (offset, view) in CALENDAR_VIEWS.iter().filter(|view| **view != default_view).enumerate() {
+            let label = match *view {
+                "day" => gettext("Today's agenda (day view)"),
+                "week" => gettext("This week"),
+                _ => gettext("This month"),
+            };
+            rows.push(calendar_row(label, gettext("Proton Calendar in Spotty"), calendar_url(slot, view, today_date), 99_990 - offset as i32));
+        }
+    }
     rows
 }
 
@@ -149,14 +318,30 @@ fn find_in_folder(root: &Path, query: &str) -> Vec<(i32, PathBuf)> {
 }
 
 pub fn drive_search(query: &str, config: &Config) -> Vec<SearchResult> {
+    let slot = config.proton_drive_account;
     let mut rows = vec![SearchResult {
         kind: ResultKind::Web,
         title: gettext("Open Proton Drive"),
-        subtitle: Some(gettext("drive.proton.me in your browser")),
+        subtitle: Some(gettext("Your files, in Spotty · try trash, shared, photos")),
         icon: Some("folder-remote-symbolic".into()),
-        action: Action::OpenUrl(drive_url(config.proton_drive_account)),
+        action: Action::OpenProtonWeb(drive_url(slot)),
         score: 100_000,
     }];
+    // Places in Drive, offered when nothing is typed or what is typed starts one.
+    let lower = query.trim().to_lowercase();
+    for (rank, (word, title, path)) in DRIVE_PLACES.iter().enumerate() {
+        let named = !lower.is_empty() && (word.starts_with(&lower) || title.to_lowercase().starts_with(&lower));
+        if lower.is_empty() || named {
+            rows.push(SearchResult {
+                kind: ResultKind::Web,
+                title: gettext(title),
+                subtitle: Some(gettext("Proton Drive in Spotty")),
+                icon: Some("folder-remote-symbolic".into()),
+                action: Action::OpenProtonWeb(drive_place_url(slot, path)),
+                score: if named { 100_050 - rank as i32 } else { 99_900 - rank as i32 },
+            });
+        }
+    }
     let Some(folder) = drive_folder(config) else { return rows };
     rows.push(SearchResult {
         kind: ResultKind::Folder,
@@ -475,7 +660,62 @@ fn matching_cities(text: &str, countries: &[crate::proton_vpn::Country]) -> Vec<
 const ON_WORDS: [&str; 6] = ["on", "connect", "up", "start", "fastest", "quick"];
 const OFF_WORDS: [&str; 5] = ["off", "disconnect", "down", "stop", "disable"];
 const CONTROL_WORDS: [&str; 9] =
-    ["status", "settings", "signin", "sign", "login", "signout", "logout", "account", "options"];
+    ["status", "settings", "signin", "signout", "sign", "login", "logout", "account", "options"];
+
+/// Ghost text for Proton trigger rows: the word or place a row stands for,
+/// continuing what was typed — "ger" → "Germany", "connect ge" → "connect
+/// Germany", "zur" → "Zurich", "of" → "off", "st" → "status",
+/// "tom" → "tomorrow". `None` means the row offers no completion.
+pub fn ghost_for(res: &SearchResult, typed: &str) -> Option<String> {
+    let lower = typed.to_lowercase();
+    // A leading connector word stays as typed: "connect ge" → "connect Germany".
+    let prefix_len = match lower.split_once(' ') {
+        Some((first, _)) if matches!(first, "connect" | "to" | "in") => first.len() + 1,
+        _ => 0,
+    };
+    let (prefix, rest) = typed.split_at(prefix_len);
+    if rest.is_empty() || rest.starts_with(' ') {
+        return None;
+    }
+    let complete = |word: &str| {
+        let lower_word = word.to_lowercase();
+        (lower_word.starts_with(&rest.to_lowercase()) && lower_word != rest.to_lowercase())
+            .then(|| format!("{prefix}{word}"))
+    };
+    let first_word = |words: &[&str]| words.iter().find_map(|word| complete(word));
+    // Country and city rows are titled "<flag> Name" / "📍 Name".
+    let place = || res.title.split_once(' ').map(|(_, name)| name).unwrap_or(&res.title);
+    match &res.action {
+        Action::ProtonVpn { op, target } if op == "disconnect" => {
+            if prefix.is_empty() { first_word(&OFF_WORDS) } else { None }
+        }
+        Action::ProtonVpn { target, .. } => match VpnTarget::decode(target) {
+            VpnTarget::Country(_) | VpnTarget::City(_) => complete(place()),
+            VpnTarget::Server(name) => complete(&name),
+            VpnTarget::Fastest if prefix.is_empty() => first_word(&ON_WORDS),
+            VpnTarget::Fastest => None,
+        },
+        Action::OpenProtonVpn if prefix.is_empty() => first_word(&CONTROL_WORDS),
+        Action::OpenProtonWeb(url) if url.starts_with("https://calendar.proton.me/") && prefix.is_empty() => {
+            first_word(&CALENDAR_WORDS)
+        }
+        Action::OpenProtonWeb(url) if url.starts_with("https://drive.proton.me/") && prefix.is_empty() => {
+            first_word(&DRIVE_PLACES.map(|(word, ..)| word))
+        }
+        _ => None,
+    }
+}
+
+/// True for rows whose ghost text [`ghost_for`] decides.
+pub fn owns_ghost(res: &SearchResult) -> bool {
+    match &res.action {
+        Action::ProtonVpn { .. } | Action::OpenProtonVpn => true,
+        Action::OpenProtonWeb(url) => {
+            url.starts_with("https://calendar.proton.me/") || url.starts_with("https://drive.proton.me/")
+        }
+        _ => false,
+    }
+}
 
 pub fn vpn_search(query: &str, config: &Config) -> Vec<SearchResult> {
     if !crate::proton_vpn::available() {
@@ -567,8 +807,20 @@ fn vpn_search_with(
         rows.push(connect_row(&city, countries, score));
         score -= 1;
     }
+    // Part of a command word ("o", "of", "disc"): offer it too, so the ghost
+    // text can complete it.
+    let word_prefix = |words: &[&str]| rest.is_empty() && words.iter().any(|w| w.starts_with(first.as_str()));
     if control_prefix {
-        rows.push(controls_row(gettext("Open Proton VPN status and settings"), score - 1));
+        score -= 1;
+        rows.push(controls_row(gettext("Open Proton VPN status and settings"), score));
+    }
+    if word_prefix(&OFF_WORDS) {
+        score -= 1;
+        rows.push(disconnect_row(score));
+    }
+    if word_prefix(&ON_WORDS) {
+        score -= 1;
+        rows.push(connect_row(&preferred, countries, score));
     }
     rows
 }
@@ -587,12 +839,67 @@ mod tests {
         assert_eq!(drive_url(0), "https://drive.proton.me/u/0/");
     }
 
+    /// Thursday 8 October 2026.
+    fn thursday() -> glib::DateTime {
+        glib::DateTime::from_local(2026, 10, 8, 12, 0, 0.0).unwrap()
+    }
+
+    fn when(query: &str) -> Option<((i32, u32, u32), Option<&'static str>)> {
+        parse_when(query, &thursday()).map(|w| (w.date, w.view))
+    }
+
     #[test]
     fn dates_parse_iso_and_reject_invalid_days() {
-        assert_eq!(parse_date("2026-02-28"), Some((2026, 2, 28)));
-        assert_eq!(parse_date("2026-02-30"), None);
-        assert_eq!(parse_date("meeting"), None);
-        assert!(parse_date("today").is_some());
+        assert_eq!(when("2026-02-28"), Some(((2026, 2, 28), None)));
+        assert_eq!(when("2026-02-30"), None);
+        assert_eq!(when("meeting"), None);
+        assert_eq!(when(""), None);
+        assert_eq!(when("today"), Some(((2026, 10, 8), None)));
+    }
+
+    #[test]
+    fn calendar_understands_everyday_phrases() {
+        assert_eq!(when("tomorrow"), Some(((2026, 10, 9), None)));
+        assert_eq!(when("yesterday"), Some(((2026, 10, 7), None)));
+        // The coming weekday; a bare weekday never means today.
+        assert_eq!(when("friday"), Some(((2026, 10, 9), None)));
+        assert_eq!(when("mon"), Some(((2026, 10, 12), None)));
+        assert_eq!(when("thursday"), Some(((2026, 10, 15), None)));
+        assert_eq!(when("this thursday"), Some(((2026, 10, 8), None)));
+        assert_eq!(when("next sunday"), Some(((2026, 10, 11), None)));
+        assert_eq!(when("week"), Some(((2026, 10, 8), Some("week"))));
+        assert_eq!(when("next week"), Some(((2026, 10, 15), Some("week"))));
+        assert_eq!(when("last week"), Some(((2026, 10, 1), Some("week"))));
+        assert_eq!(when("month"), Some(((2026, 10, 8), Some("month"))));
+        assert_eq!(when("next month"), Some(((2026, 11, 1), Some("month"))));
+        assert_eq!(when("last month"), Some(((2026, 9, 1), Some("month"))));
+        assert_eq!(when("+3"), Some(((2026, 10, 11), None)));
+        assert_eq!(when("3d"), Some(((2026, 10, 11), None)));
+        assert_eq!(when("-2d"), Some(((2026, 10, 6), None)));
+        assert_eq!(when("in 2 weeks"), Some(((2026, 10, 22), None)));
+        assert_eq!(when("2 days"), Some(((2026, 10, 10), None)));
+        assert_eq!(when("24 oct"), Some(((2026, 10, 24), None)));
+        assert_eq!(when("oct 24"), Some(((2026, 10, 24), None)));
+        assert_eq!(when("1st jan 2027"), Some(((2027, 1, 1), None)));
+        assert_eq!(when("31 apr"), None);
+        assert_eq!(when("99999d"), None);
+    }
+
+    #[test]
+    fn calendar_rows_use_the_phrase_view_and_default_the_rest() {
+        let mut config = Config::default();
+        config.proton_calendar_view = "day".into();
+        let rows = calendar_search("next month", &config);
+        assert!(matches!(&rows[0].action, Action::OpenProtonWeb(url) if url.contains("/month/")));
+        assert!(matches!(&rows.last().unwrap().action, Action::OpenProtonWeb(url) if url.contains("/day/")));
+        // Nothing typed also offers the other views.
+        assert_eq!(calendar_search("", &config).len(), 3);
+    }
+
+    #[test]
+    fn drive_places_have_stable_web_paths() {
+        assert_eq!(drive_place_url(0, "trash"), "https://drive.proton.me/u/0/trash");
+        assert!(DRIVE_PLACES.iter().all(|(word, _, path)| !word.is_empty() && !path.contains("..")));
     }
 
     #[test]
@@ -615,7 +922,7 @@ mod tests {
 
         let rows = drive_search("receipt", &config);
         let _ = std::fs::remove_dir_all(&root);
-        assert!(matches!(rows[0].action, Action::OpenUrl(_)));
+        assert!(matches!(rows[0].action, Action::OpenProtonWeb(_)));
         let files: Vec<_> = rows.iter().filter(|r| r.kind == ResultKind::File).collect();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].title, "receipt.pdf");
@@ -735,5 +1042,27 @@ mod tests {
         let rows = vpn_search_with("", &config, &list, Some(false));
         assert!(matches!(rows[0].action, Action::OpenProtonVpn));
         assert!(rows[0].title.contains("Sign in"));
+    }
+
+    #[test]
+    fn ghost_text_completes_what_rows_stand_for() {
+        let config = Config::default();
+        let list = proton_list();
+        let ghost = |query: &str| {
+            vpn_search_with(query, &config, &list, Some(true))
+                .iter()
+                .find_map(|row| ghost_for(row, query))
+        };
+        assert_eq!(ghost("ger").as_deref(), Some("Germany"));
+        assert_eq!(ghost("Swi").as_deref(), Some("Switzerland"));
+        assert_eq!(ghost("connect ge").as_deref(), Some("connect Germany"));
+        assert_eq!(ghost("zur").as_deref(), Some("Zurich"));
+        assert_eq!(ghost("of").as_deref(), Some("off"));
+        assert_eq!(ghost("sta").as_deref(), Some("status"));
+        assert_eq!(ghost("ch#2").as_deref(), None);
+        assert_eq!(ghost("Germany"), None);
+        let calendar = calendar_search("tom", &config);
+        assert_eq!(calendar.iter().find_map(|row| ghost_for(row, "tom")).as_deref(), Some("tomorrow"));
+        assert!(calendar.iter().all(owns_ghost));
     }
 }

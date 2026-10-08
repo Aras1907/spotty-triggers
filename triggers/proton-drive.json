@@ -2,14 +2,14 @@
   "id": "proton-drive",
   "name": "Proton Drive",
   "word": "drive",
-  "description": "Open Proton Drive or search a locally synced Drive folder",
+  "description": "Proton Drive built into Spotty: sign in once, jump to trash, shared or photos, or search a synced folder",
   "icon": "folder-remote-symbolic",
   "shortcut": "",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "author": "spotty",
   "native": true,
   "preinstalled": false,
-  "help": "Optional Proton Drive trigger\n\nInstalling adds the `drive` trigger and a Proton Drive row under Settings → Search → Services and integrations. `drive` opens drive.proton.me in your default browser.\n\nIn Settings you can choose which signed-in Proton account to open and, optionally, a local folder you already keep in sync with Proton Drive (for example with rclone). With a folder set, `drive <name>` searches file and folder names inside it and opens matches locally.\n\nProton has no official Linux Drive client, and Spotty does not sync files itself. Sign-in happens on Proton's website; Spotty never sees or stores Proton credentials. Uninstalling removes the trigger only and leaves your files untouched.",
+  "help": "Proton Drive, built into Spotty\n\nInstalling adds the `drive` trigger and a Proton Drive row under Settings → Search → Services and integrations. `drive` opens Proton Drive in Spotty's own Proton window, where you can browse, upload and download files (downloads go to your Downloads folder). `drive trash`, `drive shared`, `drive with-me`, `drive photos` and `drive devices` jump straight to those places.\n\nSign in once on Proton's own sign-in page inside that window. Spotty keeps the session in its private Proton web profile, shared with Proton Calendar and Proton Pass, so you stay signed in and any Proton app you install later finds you already signed in; Spotty never sees or stores your password.\n\nOptionally pick a local folder you keep in sync with Proton Drive (for example with rclone); `drive <name>` then also searches file names in it. Spotty shows Proton's own web app using the system's WebKitGTK; without WebKitGTK it opens in your browser. Uninstalling removes the trigger only.",
   "action": {
     "type": "native"
   },
