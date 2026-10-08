@@ -121,6 +121,14 @@ pub enum Action {
         op: String,
         target: String,
     },
+    /// Open one of Spotty's native Proton windows (no web page involved):
+    /// `op` is "calendar" (target `YYYY-MM-DD`, or empty for today), "drive"
+    /// (target a folder id, or empty for My files), "download" (a file id) or
+    /// "settings" (target the service id whose sign-in to show).
+    ProtonNative {
+        op: String,
+        target: String,
+    },
     /// Remove an installed trigger by id.
     UninstallTrigger(String),
     /// Start a long-running package operation in the background. It keeps
@@ -288,6 +296,31 @@ fn inline_file_mode(query: &str, config: &Config) -> Option<(String, String)> {
         .then(|| (kw.word.clone(), rest.to_string()))
 }
 
+/// All usable trigger words for the optional expanded, empty regular search.
+/// Includes triggers whose results only appear in their dedicated mode.
+/// Keep every row: the window limits the viewport, not the available words.
+pub fn empty_search_triggers(config: &Config) -> Vec<SearchResult> {
+    if !config.behavior.expand_triggers_in_regular_search {
+        return Vec::new();
+    }
+    let installed = crate::triggers::keywords();
+    let order = config.ordered_ids();
+    let mut seen = std::collections::HashSet::new();
+    let mut keywords: Vec<_> = config.command_keywords.iter().chain(installed.iter())
+        .filter(|kw| !kw.word.trim().is_empty() && config.keyword_usable(kw))
+        .filter(|kw| seen.insert(kw.word.to_lowercase()))
+        .collect();
+    keywords.sort_by_key(|kw| order.iter().position(|id| id == &kw.id).unwrap_or(order.len()));
+    keywords.into_iter().enumerate().map(|(i, kw)| SearchResult {
+        kind: ResultKind::System,
+        title: kw.word.clone(),
+        subtitle: Some(kw.description.clone()),
+        icon: Some(if kw.icon.is_empty() { "folder-symbolic".into() } else { kw.icon.clone() }),
+        action: Action::EnterMode(kw.word.clone()),
+        score: 900_000i32.saturating_sub(i as i32),
+    }).collect()
+}
+
 /// The inline trigger behind a typed word: exact first, then a bounded
 /// fuzzy pass (3–12 chars) so a typo'd inline trigger still routes —
 /// "fnd report" searches files — while short or long words, which is where
@@ -383,7 +416,7 @@ pub fn search(
 ) -> Vec<SearchResult> {
     let query = query.trim();
     if query.is_empty() {
-        return vec![];
+        return empty_search_triggers(config);
     }
     if let Some((mode_word, rest)) = inline_file_mode(query, config) {
         return search_mode(&mode_word, &rest, config, snap_lock);
@@ -461,7 +494,6 @@ fn regular_trigger_sources(
     let mut out = Vec::new();
     for kw in config.command_keywords.iter().chain(owned.iter()) {
         if kw.is_result()
-            || kw.word.is_empty()
             || matches!(kw.id.as_str(), "clipboard" | "dictionary")
             // Vault titles never join the everyday search.
             || kw.id == "proton-pass"
@@ -477,7 +509,7 @@ fn regular_trigger_sources(
             );
         out.push((
             kw.id.clone(),
-            regular_rows(search_mode(&kw.word, q, config, snap_lock), runs_commands),
+            regular_rows(search_keyword(kw.clone(), q, config, snap_lock), runs_commands),
             runs_commands,
         ));
     }
@@ -497,7 +529,7 @@ pub fn main_thread_trigger_results(
     }
     let mut out = Vec::new();
     for id in ["clipboard", "dictionary"] {
-        let usable = config.keyword_for_id(id).is_some_and(|kw| !kw.word.is_empty());
+        let usable = config.keyword_for_id(id).is_some();
         if !usable || !config.in_regular_search(id) {
             continue;
         }
@@ -536,14 +568,16 @@ fn ordered_score(position: usize, index: usize) -> i32 {
 
 /// The regular search: every source's rows, ranked by the order the user gave
 /// result types and triggers in Settings (highest first), and by each source's
-/// own relevance within it. Pins lead, running operations follow them, and a
-/// trigger that runs commands always comes last — whatever its place — so
-/// Enter can't run one by accident.
+/// own relevance within it. Pins lead, running operations follow them, and
+/// unprefixed command suggestions come last.
 pub fn universal_results(
     query: &str,
     config: &Config,
     snap_lock: &Arc<RwLock<crate::index::Snapshot>>,
 ) -> Vec<SearchResult> {
+    if query.trim().is_empty() {
+        return empty_search_triggers(config);
+    }
     let ql = query.to_lowercase();
     let mut sources: std::collections::HashMap<String, Vec<SearchResult>> =
         std::collections::HashMap::new();
@@ -723,6 +757,30 @@ pub fn search_mode(
         None => return vec![],
     };
 
+    search_keyword(kw, query, config, snap_lock)
+}
+
+/// Active modes use their stable id so clearing or renaming a word does not
+/// change routing. Keep word lookup as a fallback for older callers.
+pub fn search_mode_for_id(
+    id: &str,
+    query: &str,
+    config: &Config,
+    snap_lock: &Arc<RwLock<crate::index::Snapshot>>,
+) -> Vec<SearchResult> {
+    match config.keyword_for_id(id).or_else(|| config.keyword_for_word(id)) {
+        Some(kw) => search_keyword(kw, query, config, snap_lock),
+        None => Vec::new(),
+    }
+}
+
+/// Dispatch using the stable keyword identity, including wordless triggers.
+fn search_keyword(
+    kw: crate::config::CommandKeyword,
+    query: &str,
+    config: &Config,
+    snap_lock: &Arc<RwLock<crate::index::Snapshot>>,
+) -> Vec<SearchResult> {
     if kw.all_files || !kw.extensions.is_empty() {
         // ensure_files_indexed() must be called by the caller (main thread)
         // before invoking this function.
@@ -783,14 +841,17 @@ pub fn search_mode(
         return merge_pinned(files, &rl, pinned);
     }
     if !kw.extensions.is_empty() {
-        let query = if rest.is_empty() {
-            kw.word.clone()
-        } else {
-            format!("{} {}", kw.word, rest)
-        };
+        let mut extensions = kw.extensions.clone();
+        if kw.id == "ppt" || kw.word == "ppt" {
+            for ext in ["ppt", "pptx", "odp", "key"] {
+                if !extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
+                    extensions.push(ext.to_string());
+                }
+            }
+        }
         let mut files = {
             let snap_guard = snap_lock.read().unwrap();
-            files::search(&query, &snap_guard.files, config)
+            files::type_filtered(&snap_guard.files, &extensions, &rest.to_lowercase())
         };
         files.truncate(20);
         return merge_pinned(files, &rl, pinned);

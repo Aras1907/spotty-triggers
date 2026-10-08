@@ -588,6 +588,11 @@ fn trigger_offline() -> Result<(), Failure> {
 /// Download the updates and arm them for the next restart; update in place on a
 /// backend that can't download-only. `only` limits it to one package.
 fn update_system(only: Option<&str>, task: &TaskHandle) -> Result<(), Failure> {
+    if task.cancelled() {
+        return Err(Failure::plain("Cancelled"));
+    }
+    task.status("Refreshing package information");
+    transact("RefreshCache", tuple([true.to_variant()]), true, Some(task))?;
     task.status("Looking for updates");
     let wanted: Vec<Update> = get_updates()?
         .into_iter()

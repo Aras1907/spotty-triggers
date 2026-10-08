@@ -1,8 +1,8 @@
-// CMD trigger mode: kill running processes, install/uninstall/search Flatpak+distro apps.
-// Suggestions are built from async-fetched caches so the UI never blocks.
+// App sources and updates: the Flatpak/distro/Snap catalogs behind "Search for
+// new Apps", and the update checks behind "Updates". Rows are built from
+// async-fetched caches so the UI never blocks.
 
 use crate::config::{AppSources, Config};
-use crate::index::AppEntry;
 use crate::search::{Action, ResultKind, SearchResult};
 use crate::i18n::gettext;
 use gtk::glib;
@@ -383,10 +383,6 @@ pub(crate) fn flatpak_is_available() -> Option<bool> {
 
 // ── Background fetchers ───────────────────────────────────────────────────────
 
-pub fn prewarm_update_cache() {
-    ensure_updates_checked();
-}
-
 pub fn preload_install_cache_async(sources: AppSources) {
     // Source presence is always probed (not just when the saved switches use
     // them) so the Settings source switches can show/hide based on it.
@@ -474,7 +470,10 @@ pub fn update_verb_rows(query: &str, config: &Config) -> Option<Vec<SearchResult
     if !exact && !prefix && !typo {
         return None;
     }
-    let score = if rest.is_empty() { 100_000 } else { 50_000 };
+    // Once the user has specified a target (including a target supplied as
+    // ghost text), put that requested update ahead of the generic reboot row.
+    // Otherwise a pending offline restart can outrank e.g. "update all".
+    let score = if rest.is_empty() { 100_000 } else { 110_000 };
     let mut rows = update_results(rest, config);
     // Boost the actual update rows above incidental matches; leave the
     // "disable update checks" tail row where it belongs.
@@ -482,6 +481,19 @@ pub fn update_verb_rows(query: &str, config: &Config) -> Option<Vec<SearchResult
         if r.score >= 1000 {
             r.score = r.score.max(score);
         }
+    }
+    // Preserve this order through universal_results' stronger source ranking:
+    // it promotes update rows by their vector position. A target named in the
+    // query therefore has to move ahead of general notices (for example, a
+    // pending reboot) here, before that promotion runs.
+    if !rest.is_empty() {
+        let target = rest.to_lowercase();
+        rows.sort_by_key(|row| {
+            query_for(&row.title)
+                .and_then(|q| q.split_once(char::is_whitespace).map(|(_, target)| target.to_lowercase()))
+                .map(|candidate| !candidate.starts_with(&target))
+                .unwrap_or(true)
+        });
     }
     Some(rows)
 }
@@ -627,44 +639,21 @@ fn update_cmd_args(source: &str, app_id: Option<&str>) -> Vec<String> {
             }
         }
         "all" => {
-            let mut parts: Vec<(&str, String)> = Vec::new();
-            let mut has_distro = false;
-            let cache = update_cache().lock().unwrap();
-            if let Some((_, entries)) = cache.as_ref() {
-                let has_fp = entries
-                    .iter()
-                    .any(|u| u.source == "flatpak");
-                if has_fp {
-                    parts.push(("flatpak", "flatpak update --assumeyes".into()));
-                }
-                // Distro packages go through a system service only — an
-                // in-process D-Bus task, not a shell command, so it can't join
-                // the chain below.
-                has_distro = entries.iter().any(|u| is_distro_source(&u.source));
-                if entries.iter().any(|u| u.source == "snap") {
-                    parts.push(("snap", "pkexec snap refresh".into()));
-                }
-                // AppImage updates always come last: they run unprivileged
-                // and in place (no pkexec involved).
-                for u in entries.iter().filter(|u| u.source == "appimage") {
-                    if let Some(p) = &u.app_id {
-                        if let Some(cmd) =
-                            crate::search::appimage::update_shell_cmd(std::path::Path::new(p))
-                        {
-                            parts.push(("appimage", cmd));
-                        }
-                    }
-                }
+            // Query installed sources when the operation runs. The preview
+            // cache may be old or incomplete and must not limit an all update.
+            let mut parts: Vec<(&str, String)> = vec![
+                ("flatpak", "if command -v flatpak >/dev/null 2>&1; then flatpak update --assumeyes; fi".into()),
+                ("snap", "if command -v snap >/dev/null 2>&1; then pkexec snap refresh; fi".into()),
+            ];
+            // AppImages recheck each discovered file at execution time too.
+            for cmd in crate::search::appimage::all_update_shell_cmds() {
+                parts.push(("appimage", cmd));
             }
-            drop(cache);
             // The daemon half runs first (it installs at the next restart,
             // the rest install immediately), so the chain follows it as the
             // task's script argument.
-            let door = if has_distro { system_door() } else { None };
-            let via_daemon = door.is_some();
-            if parts.is_empty() && !via_daemon {
-                no_updates_cmd()
-            } else if let Some(door) = door {
+            let door = system_door();
+            if let Some(door) = door {
                 let script = chained_script_text(&parts);
                 match door {
                     Door::Dnf5Daemon => crate::dnf5daemon::all_args(&script),
@@ -816,7 +805,8 @@ fn assemble_updates(
 }
 
 fn fetch_flatpak_updates() -> Vec<(String, String)> {
-    // --user and --system in parallel too.
+    // Include runtimes and extensions as well as apps; runtime-only updates
+    // must enable the update action too. Check both installations in parallel.
     let raws: Vec<String> = std::thread::scope(|s| {
         let handles: Vec<_> = ["--user", "--system"]
             .iter()
@@ -828,7 +818,6 @@ fn fetch_flatpak_updates() -> Vec<(String, String)> {
                             scope,
                             "remote-ls",
                             "--updates",
-                            "--app",
                             "--columns=application,name",
                         ])
                         .output()
@@ -1516,6 +1505,19 @@ fn fuzzy_distro<'a>(query: &str, items: &'a [DistroPackage]) -> Vec<(&'a DistroP
 
 // ── Template list ─────────────────────────────────────────────────────────────
 
+fn searching_placeholder(label: &str) -> Vec<SearchResult> {
+    vec![SearchResult {
+        kind: ResultKind::System,
+        title: label.into(),
+        subtitle: Some(gettext("Please wait…").into()),
+        icon: Some("emblem-synchronizing-symbolic".into()),
+        action: Action::Noop,
+        score: 1000,
+    }]
+}
+
+// ── Main search ───────────────────────────────────────────────────────────────
+
 // Search for apps to install across Flatpak and/or distro PM.
 fn search_install(query: &str, sources: AppSources) -> Vec<SearchResult> {
     let detected = get_detected_pm();
@@ -1746,6 +1748,12 @@ fn search_updates(query: &str, config: &Config) -> Vec<SearchResult> {
             let mut snap_scope = false;
             let mut appimage_scope = false;
             for sc in &scopes {
+                // Once a restart is pending, a second "all" update is not
+                // actionable. Keep the restart notice (or staged Update now)
+                // as the path forward.
+                if sc.key == "all" && reboot_pending() {
+                    continue;
+                }
                 if rest.is_empty() || sc.matches(&rl) {
                     out.push(sc.row());
                     matched = true;
@@ -2356,17 +2364,6 @@ fn snap_install_result(pkg: DistroPackage) -> SearchResult {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn searching_placeholder(label: &str) -> Vec<SearchResult> {
-    vec![SearchResult {
-        kind: ResultKind::System,
-        title: label.into(),
-        subtitle: Some(gettext("Please wait…").into()),
-        icon: Some("emblem-synchronizing-symbolic".into()),
-        action: Action::Noop,
-        score: 1000,
-    }]
-}
 
 #[cfg(test)]
 mod tests {

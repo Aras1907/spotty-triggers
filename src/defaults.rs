@@ -15,8 +15,8 @@ static CATALOG: LazyLock<Vec<RepoTrigger>> = LazyLock::new(|| {
 pub const PROTON_TRIGGERS: [(&str, &str, &str, &str); 4] = [
     ("proton-vpn", "vpn", "network-vpn-symbolic", "Open Proton VPN sign-in and connection controls"),
     ("proton-pass", "pass", "dialog-password-symbolic", "Search your Proton Pass vault and copy passwords"),
-    ("proton-calendar", "cal", "x-office-calendar-symbolic", "Proton Calendar in Spotty, on any date"),
-    ("proton-drive", "drive", "folder-remote-symbolic", "Proton Drive in Spotty, or search its synced folder"),
+    ("proton-calendar", "cal", "x-office-calendar-symbolic", "Your Proton Calendar in Spotty: upcoming events and any day"),
+    ("proton-drive", "drive", "folder-remote-symbolic", "Your Proton Drive in Spotty: search and browse My files"),
 ];
 
 fn proton_trigger(id: &str) -> Option<&'static (&'static str, &'static str, &'static str, &'static str)> {
@@ -26,7 +26,7 @@ fn proton_trigger(id: &str) -> Option<&'static (&'static str, &'static str, &'st
 pub fn supports_native(id: &str) -> bool {
     match id {
         // VPN and Pass run Proton's official clients built into Spotty; Calendar and Drive
-        // open Proton's web apps in Spotty.
+        // talk to Proton natively through Spotty's Proton account.
         "proton-vpn" => cfg!(target_os = "linux"),
         "proton-pass" => cfg!(target_os = "linux"),
         "proton-calendar" | "proton-drive" => true,

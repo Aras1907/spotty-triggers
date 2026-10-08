@@ -10,9 +10,9 @@
 //! - The clipboard copy carries `x-kde-passwordManagerHint`, so Spotty's own
 //!   clipboard history (and other managers that honour it) skip it, and Spotty
 //!   clears it again after [`CLEAR_CLIPBOARD_SECS`] if it is still there.
-//! - Sign-in is Proton's web sign-in: Spotty never sees your password. Opened
-//!   in Spotty's Proton window it reuses the Proton session of Calendar and
-//!   Drive, so installing Pass after those signs you in without typing again.
+//! - Sign-in uses Spotty's Proton account: the client asks for a session fork
+//!   and Spotty approves it natively (`crate::proton_session`), so no password
+//!   is typed here and no web page opens.
 //! - The client runs with a cleared environment, its own session folder and
 //!   key in the desktop keyring, and with its update check and telemetry off.
 //!
@@ -631,15 +631,17 @@ fn mark_signed_out() {
     notify_ui();
 }
 
-/// Sign in with Proton's web sign-in. The client prints a Proton address; it
-/// opens in Spotty's Proton window, which already holds your Proton session
-/// when Calendar or Drive is signed in, and the client finishes by itself.
+/// Sign in to Proton Pass. The client prints a Proton approval link; Spotty
+/// approves it with the native Proton session, and the client finishes by
+/// itself. Without a native session the link is not opened: the Proton account
+/// window opens instead, and Pass signs in once that sign-in is done.
 pub fn sign_in() {
     if !available() {
         return;
     }
     std::thread::spawn(|| {
         use crate::i18n::gettext;
+        let _signing = crate::proton_session::SigningIn::start("proton-pass");
         if let Some(mut earlier) = SIGN_IN.lock().unwrap_or_else(|p| p.into_inner()).take() {
             let _ = earlier.kill();
             let _ = earlier.wait();
@@ -670,14 +672,43 @@ pub fn sign_in() {
             }
         });
 
+        // Ends this sign-in: nothing more can come of it.
+        let stop = || {
+            let child = SIGN_IN.lock().unwrap_or_else(|p| p.into_inner()).take();
+            if let Some(mut child) = child {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        };
         let mut opened = false;
         let mut success = false;
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let line = line.trim();
-            if !opened && line.starts_with("https://") && crate::security::http_uri(line).is_ok() {
+            if !opened && line.starts_with("https://") {
                 opened = true;
-                let url = line.to_owned();
-                glib::MainContext::default().invoke(move || crate::proton_web::open(&url));
+                // The link carries a key for the client: it is read here and
+                // never shown or logged.
+                let Some(login) = spotty_proton_account::parse_pass_login_url(line) else {
+                    notify(&gettext("Proton Pass"), &gettext("Proton Pass asked to sign in in a form Spotty doesn't know. Try again."));
+                    stop();
+                    break;
+                };
+                match crate::proton_native::client() {
+                    Some(client) => {
+                        if let Err(error) = client.approve_pass_login(&login) {
+                            notify(&gettext("Proton Pass"), &gettext("Couldn't sign in to Proton Pass: {error}").replace("{error}", &error.to_string()));
+                            stop();
+                            break;
+                        }
+                    }
+                    None => {
+                        // Not signed in to Proton in Spotty: sign in there first.
+                        // Pass starts again once that is done (share_sign_in).
+                        stop();
+                        glib::MainContext::default().invoke(|| crate::ui::proton_native_ui::open_account_window(None));
+                        break;
+                    }
+                }
             } else if line.starts_with("Successfully logged in") {
                 success = true;
             }

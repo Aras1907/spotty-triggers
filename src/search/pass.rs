@@ -140,10 +140,10 @@ pub fn search(query: &str) -> Vec<SearchResult> {
     let needle = query.trim().to_lowercase();
     proton_pass::with_items(|state, items| match state {
         State::SignedOut => {
-            let subtitle = if crate::proton_web::signed_in() {
-                gettext("Uses your Proton session in Spotty — no password to type")
+            let subtitle = if crate::proton_native::signed_in() {
+                gettext("Uses your Proton account in Spotty — nothing to type")
             } else {
-                gettext("Opens Proton's sign-in page in Spotty")
+                gettext("Sign in once with your Proton account")
             };
             vec![
                 message_row(gettext("Sign in to Proton Pass"), subtitle, "signin", TOP),

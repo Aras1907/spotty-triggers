@@ -2161,7 +2161,7 @@ pub fn search(query: &str, files: &[FileEntry], cfg: &Config) -> Vec<SearchResul
 }
 
 /// List files whose extension matches `exts`, optionally filtered by name.
-fn type_filtered(files: &[FileEntry], exts: &[String], name_filter: &str) -> Vec<SearchResult> {
+pub(super) fn type_filtered(files: &[FileEntry], exts: &[String], name_filter: &str) -> Vec<SearchResult> {
     let mut hits: Vec<(i32, usize)> = Vec::new();
     for (i, f) in files.iter().enumerate() {
         if f.is_dir {

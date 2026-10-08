@@ -87,12 +87,12 @@ fn compute(
 ) -> Vec<SearchResult> {
     // 1. Active mode → dispatch directly (handles empty query too).
     if let Some(m) = mode {
-        return crate::search::search_mode(m, query, config, snap);
+        return crate::search::search_mode_for_id(m, query, config, snap);
     }
 
     let query = query.trim();
     if query.is_empty() {
-        return vec![];
+        return crate::search::empty_search_triggers(config);
     }
 
     // 2. Inline "find foo" etc.

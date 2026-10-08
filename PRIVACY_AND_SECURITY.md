@@ -21,19 +21,53 @@ available at `../PRIVACY_AND_SECURITY.md`.
 - Proton Pass runs Proton's official `pass-cli`, built from a source archive
   pinned by commit and SHA-256 and embedded in Spotty
   ([details](proton-pass-embedded/README.md)). It runs with a cleared
-  environment, its own session folder, its key in the desktop keyring and its
-  update check and telemetry disabled. Spotty keeps only item titles in memory
-  and never writes them to disk; passwords, usernames, one-time codes and notes
-  are read when copied, marked as passwords on the clipboard, wiped from
-  Spotty's buffers and cleared from the clipboard after 30 seconds. Sign-in is
-  Proton's web sign-in in Spotty's Proton window; Spotty never sees the
-  password. A running desktop can still read the clipboard during those 30
-  seconds, and GTK keeps a copy of the text until it is cleared. The client's
-  dependencies come from Proton's Cargo registry and GitHub, pinned by
-  `pass-cli.Cargo.lock`; they are not independently audited here.
-- Spotty remembers that a Proton web session exists with an empty marker file
-  so a newly installed Proton integration can use it; the session itself stays
-  in the private WebKit profile (`~/.local/share/spotty/proton-web`).
+  environment, its own session folder (`~/.local/share/spotty/proton-pass`), its
+  key in the desktop keyring and its update check and telemetry disabled. Pass
+  signs in with a child session forked from Spotty's Proton session. `pass-cli`
+  prints an approval link; Spotty reads it and approves it natively, and no web
+  page opens. For that fork Spotty sends Proton only the user code, the client
+  name and an AES-256-GCM payload that holds the key password. The 32-byte key
+  that opens the payload is in the link and is never sent. Spotty keeps only item titles in memory and never
+  writes them to disk. Passwords, usernames, one-time codes and notes are read
+  when copied, marked as passwords on the clipboard, wiped from Spotty's buffers
+  and cleared from the clipboard after 30 seconds. A running desktop can still
+  read the clipboard during those 30 seconds, and GTK keeps a copy of the text
+  until it is cleared. The client's dependencies come from Proton's Cargo
+  registry and GitHub, pinned by `pass-cli.Cargo.lock`; they are not
+  independently audited here.
+- The Proton sign-in (Calendar, Drive, Pass and VPN) talks to Proton's API from
+  inside Spotty (no web view; [`proton-account/`](proton-account/)). You type
+  your password into a Spotty field; it is turned into an SRP proof, the server's
+  proof is verified, and the field is cleared at once. The password is kept in
+  memory only while a two-factor code or mailbox password is pending. Spotty
+  saves Proton's session tokens and the key password derived from your password
+  in `~/.local/share/spotty/proton-account/session.json` (owner-only, refused if
+  group/other-readable). This file is not encrypted, so anyone who can read your
+  files as you can use that session until you sign out. Unlocked keys, decrypted
+  file names and calendar events live in memory only. Network traffic goes to
+  Proton's API and storage hosts, over HTTPS only.
+- Pass and VPN each get a session forked from Spotty's Proton session (Proton's
+  session fork, requested with `Independent: 0`, which is meant to tie them to
+  Spotty's session; not tested live). The fork
+  requests are checked before they are sent: only Proton Pass's CLI (`cli-pass`)
+  and Proton VPN's Linux client (`linux-vpn-gui`) may be forked. No login
+  password is sent with a fork. VPN's session is kept in the desktop keyring by
+  Proton's client library, and the fork selector is never stored or logged. The
+  VPN window's own username and password form is the fallback. There the
+  password goes to Proton's client, and Spotty does not store it.
+- Not tested against Proton's live service: the Pass and VPN forks, and the
+  whole sign-in path. Whether Proton accepts forks from Spotty's third-party
+  session is unknown. Spotty does not yet verify OpenPGP signatures on names and
+  events. The live path may meet Proton's anti-abuse checks (see the README).
+- Sign out in the account window ends Spotty's Proton session at Proton and
+  deletes `session.json`. It also signs out Pass and VPN on this computer and
+  erases the Proton web profile. Pass's local sign-out runs in the background,
+  and Spotty does not wait for it. Signing out in Pass's settings removes only
+  Pass's session on this computer.
+- The Proton web profile (`~/.local/share/spotty/proton-web`) is used only to
+  show Proton web pages, such as Open Proton Pass. Spotty does not sign it in.
+  Spotty writes an empty marker file there when a Proton web page with an
+  account path loads. Nothing reads that marker.
 - Web manifests support HTTP(S) links. Activating one sends the query to its
   website. Translation uses the configured LibreTranslate endpoint, which is
   local by default but can be remote. Dictionary/currency backends can also

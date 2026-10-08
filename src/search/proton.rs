@@ -1,12 +1,14 @@
 //! Proton VPN, Proton Calendar and Proton Drive triggers. VPN drives Proton's
-//! official Linux client library built into Spotty. Proton ships no Linux
-//! desktop client for Calendar or Drive, so those open Proton's own web apps
-//! inside Spotty (signed in once in Spotty's Proton window); Drive can also
-//! search a local folder the user already syncs (for example with rclone).
-//! Spotty never sees Proton passwords: sign-in happens on Proton's own page.
+//! official Linux client library built into Spotty. Calendar and Drive talk to
+//! Proton's API natively (see `crate::proton_native`): once you sign in from
+//! Spotty's settings, `cal` lists your events and `drive` finds your files by
+//! their decrypted names, and both open Spotty's own agenda and file browser.
+//! Drive can also search a local folder the user already syncs (for example
+//! with rclone).
 use super::{Action, ResultKind, SearchResult};
 use crate::config::Config;
 use crate::i18n::gettext;
+use crate::proton_native::{self, Event, Hit, Progress};
 use std::path::{Path, PathBuf};
 
 /// Calendar views Proton's web app routes to, in Settings order.
@@ -211,58 +213,223 @@ pub fn parse_when(query: &str, now: &glib::DateTime) -> Option<When> {
         .map(|date| When { date: ymd(&date), view: None })
 }
 
-fn calendar_row(title: String, subtitle: String, url: String, score: i32) -> SearchResult {
+fn native_row(title: String, subtitle: String, icon: &str, op: &str, target: &str, score: i32) -> SearchResult {
     SearchResult {
-        kind: ResultKind::Web,
+        kind: ResultKind::System,
         title,
         subtitle: Some(subtitle),
-        icon: Some("x-office-calendar-symbolic".into()),
-        action: Action::OpenProtonWeb(url),
+        icon: Some(icon.into()),
+        action: Action::ProtonNative { op: op.into(), target: target.into() },
         score,
     }
 }
 
-pub fn calendar_search(query: &str, config: &Config) -> Vec<SearchResult> {
-    let slot = config.proton_calendar_account;
-    let default_view = calendar_view(config);
-    let now = today();
-    let mut rows = Vec::new();
-    if let Some(when) = now.as_ref().and_then(|now| parse_when(query, now)) {
-        let view = when.view.unwrap_or(default_view);
-        let (y, m, d) = when.date;
-        let name = glib::DateTime::from_local(y, m as i32, d as i32, 0, 0, 0.0)
-            .ok()
-            .and_then(|date| date.format("%A %-d %B %Y").ok())
-            .map(|text| text.to_string())
-            .unwrap_or_else(|| format!("{y:04}-{m:02}-{d:02}"));
-        rows.push(calendar_row(
-            gettext("Open {date} in Proton Calendar").replace("{date}", &name),
-            gettext("Proton Calendar in Spotty · {view} view").replace("{view}", view),
-            calendar_url(slot, view, Some(when.date)),
-            100_001,
-        ));
-    }
-    let today_date = now.as_ref().map(ymd);
-    rows.push(calendar_row(
-        gettext("Open Proton Calendar"),
-        if query.trim().is_empty() {
-            gettext("Today in the {view} view · try tomorrow, friday, next week, 24 oct or +3d").replace("{view}", default_view)
+fn message_row(title: String, subtitle: String, icon: &str, score: i32) -> SearchResult {
+    SearchResult { kind: ResultKind::System, title, subtitle: Some(subtitle), icon: Some(icon.into()), action: Action::Noop, score }
+}
+
+fn browser_row(title: String, subtitle: String, icon: &str, url: String, score: i32) -> SearchResult {
+    SearchResult { kind: ResultKind::Web, title, subtitle: Some(subtitle), icon: Some(icon.into()), action: Action::OpenUrl(url), score }
+}
+
+fn sign_in_row(service: &str, icon: &str, score: i32) -> SearchResult {
+    let title = if service == "proton-drive" { gettext("Sign in to Proton Drive") } else { gettext("Sign in to Proton Calendar") };
+    native_row(title, gettext("One sign-in for all Proton apps in Spotty"), icon, "settings", service, score)
+}
+
+/// What Spotty knows about the calendar right now.
+pub enum CalendarView {
+    SignedOut,
+    Loading,
+    Failed(String),
+    Ready(Vec<Event>),
+}
+
+/// Local midnight (unix seconds) of `date`.
+fn local_midnight(date: (i32, u32, u32)) -> Option<i64> {
+    glib::DateTime::from_local(date.0, date.1 as i32, date.2 as i32, 0, 0, 0.0).ok().map(|d| d.to_unix())
+}
+
+fn date_key((y, m, d): (i32, u32, u32)) -> String {
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// "Today 14:00–15:30", "Tomorrow · all day", "Mon 12 Oct 09:00–10:00".
+pub fn when_text(event: &Event, now: &glib::DateTime) -> String {
+    let day_label = |day: &glib::DateTime| -> String {
+        let (today, tomorrow) = (ymd(now), now.add_days(1).map(|d| ymd(&d)).unwrap_or((0, 0, 0)));
+        if ymd(day) == today {
+            gettext("Today")
+        } else if ymd(day) == tomorrow {
+            gettext("Tomorrow")
         } else {
-            gettext("Today in the {view} view").replace("{view}", default_view)
-        },
-        calendar_url(slot, default_view, today_date),
-        100_000,
-    ));
-    if query.trim().is_empty() {
-        for (offset, view) in CALENDAR_VIEWS.iter().filter(|view| **view != default_view).enumerate() {
-            let label = match *view {
-                "day" => gettext("Today's agenda (day view)"),
-                "week" => gettext("This week"),
-                _ => gettext("This month"),
-            };
-            rows.push(calendar_row(label, gettext("Proton Calendar in Spotty"), calendar_url(slot, view, today_date), 99_990 - offset as i32));
+            day.format("%a %-d %b").map(|t| t.to_string()).unwrap_or_default()
+        }
+    };
+    if event.all_day {
+        // All-day events are dates, not instants: read them as UTC.
+        let Ok(start) = glib::DateTime::from_unix_utc(event.start) else { return String::new() };
+        let local = glib::DateTime::from_local(start.year(), start.month(), start.day_of_month(), 0, 0, 0.0).unwrap_or(start);
+        return format!("{} · {}", day_label(&local), gettext("All day"));
+    }
+    let (Ok(start), Ok(end)) = (glib::DateTime::from_unix_local(event.start), glib::DateTime::from_unix_local(event.end)) else {
+        return String::new();
+    };
+    let clock = |t: &glib::DateTime| t.format("%H:%M").map(|x| x.to_string()).unwrap_or_default();
+    if ymd(&start) == ymd(&end) || event.end == event.start {
+        format!("{} {}–{}", day_label(&start), clock(&start), clock(&end))
+    } else {
+        format!("{} {} → {} {}", day_label(&start), clock(&start), day_label(&end), clock(&end))
+    }
+}
+
+fn event_row(event: &Event, now: &glib::DateTime, score: i32) -> SearchResult {
+    let mut parts = vec![when_text(event, now)];
+    if !event.location.is_empty() {
+        parts.push(event.location.lines().next().unwrap_or_default().to_owned());
+    }
+    if !event.calendar.is_empty() {
+        parts.push(event.calendar.clone());
+    }
+    let date = if event.all_day {
+        glib::DateTime::from_unix_utc(event.start).ok().map(|d| ymd(&d))
+    } else {
+        glib::DateTime::from_unix_local(event.start).ok().map(|d| ymd(&d))
+    };
+    native_row(
+        event.title.clone(),
+        parts.join(" · "),
+        "x-office-calendar-symbolic",
+        "calendar",
+        &date.map(date_key).unwrap_or_default(),
+        score,
+    )
+}
+
+/// The cached view of the calendar around `[from, to)`.
+fn calendar_snapshot(from: i64, to: i64) -> CalendarView {
+    if !proton_native::signed_in() {
+        return CalendarView::SignedOut;
+    }
+    let now = glib::DateTime::now_local().ok();
+    let midnight = now.as_ref().and_then(|n| local_midnight(ymd(n))).unwrap_or(0);
+    proton_native::calendar_ensure_cache(now.map(|n| n.to_unix()).unwrap_or(0), midnight);
+    let (progress, events, error) = proton_native::calendar_cached(from, to);
+    match progress {
+        Progress::Ready => CalendarView::Ready(events),
+        Progress::Failed => CalendarView::Failed(error),
+        _ => CalendarView::Loading,
+    }
+}
+
+pub fn calendar_search(query: &str, config: &Config) -> Vec<SearchResult> {
+    let now = today();
+    let when = now.as_ref().and_then(|now| parse_when(query, now));
+    let (from, to) = match (&when, &now) {
+        (Some(when), _) => {
+            let start = local_midnight(when.date).unwrap_or(0);
+            (start, start + 86_400)
+        }
+        (None, Some(now)) => {
+            let start = local_midnight(ymd(now)).unwrap_or(0);
+            (start, start + 8 * 86_400)
+        }
+        _ => (0, 0),
+    };
+    let view = calendar_snapshot(from, to);
+    calendar_rows(query, config, now.as_ref(), view)
+}
+
+fn calendar_rows(query: &str, config: &Config, now: Option<&glib::DateTime>, view: CalendarView) -> Vec<SearchResult> {
+    let slot = config.proton_calendar_account;
+    let browser = |score| {
+        browser_row(
+            gettext("Open Proton Calendar in your browser"),
+            gettext("calendar.proton.me"),
+            "web-browser-symbolic",
+            calendar_url(slot, calendar_view(config), None),
+            score,
+        )
+    };
+    if matches!(view, CalendarView::SignedOut) {
+        return vec![sign_in_row("proton-calendar", "x-office-calendar-symbolic", 100_000), browser(99_000)];
+    }
+    let when = now.and_then(|now| parse_when(query, now));
+    let today_date = now.map(ymd);
+    let target = when.map(|w| w.date).or(today_date).map(date_key).unwrap_or_default();
+    let mut rows = Vec::new();
+    match (&when, now) {
+        (Some(when), _) => {
+            let (y, m, d) = when.date;
+            let name = glib::DateTime::from_local(y, m as i32, d as i32, 0, 0, 0.0)
+                .ok()
+                .and_then(|date| date.format("%A %-d %B %Y").ok())
+                .map(|text| text.to_string())
+                .unwrap_or_else(|| format!("{y:04}-{m:02}-{d:02}"));
+            rows.push(native_row(
+                gettext("Open {date} in Proton Calendar").replace("{date}", &name),
+                gettext("Your agenda for that day"),
+                "x-office-calendar-symbolic",
+                "calendar",
+                &target,
+                100_001,
+            ));
+        }
+        _ => rows.push(native_row(
+            gettext("Open Proton Calendar"),
+            if query.trim().is_empty() {
+                gettext("Your agenda · try tomorrow, friday, next week, 24 oct or +3d")
+            } else {
+                gettext("Your agenda from today")
+            },
+            "x-office-calendar-symbolic",
+            "calendar",
+            &target,
+            100_000,
+        )),
+    }
+    match view {
+        CalendarView::SignedOut => {}
+        CalendarView::Loading => rows.push(message_row(gettext("Loading your calendar…"), gettext("Events are decrypted on this computer"), "content-loading-symbolic", 99_900)),
+        CalendarView::Failed(error) => rows.push(message_row(gettext("Couldn't load your calendar"), error, "dialog-warning-symbolic", 99_900)),
+        CalendarView::Ready(events) => {
+            let needle = query.trim().to_lowercase();
+            let text_query = when.is_none() && !needle.is_empty();
+            let now_unix = now.map(|n| n.to_unix()).unwrap_or(0);
+            let mut shown = 0;
+            for event in &events {
+                if text_query {
+                    let hay = format!("{} {} {}", event.title, event.location, event.calendar).to_lowercase();
+                    if !needle.split_whitespace().all(|word| hay.contains(word)) {
+                        continue;
+                    }
+                } else if when.is_none() && !event.all_day && event.end <= now_unix {
+                    // Today's finished events aren't "coming up".
+                    continue;
+                }
+                if shown >= 8 {
+                    break;
+                }
+                if let Some(now) = now {
+                    rows.push(event_row(event, now, 99_800 - shown));
+                    shown += 1;
+                }
+            }
+            if shown == 0 {
+                rows.push(message_row(
+                    if text_query { gettext("No matching event") } else { gettext("Nothing coming up") },
+                    if text_query {
+                        gettext("Searched the next two months of your calendar")
+                    } else {
+                        gettext("No events in this period")
+                    },
+                    "x-office-calendar-symbolic",
+                    99_800,
+                ));
+            }
         }
     }
+    rows.push(browser(98_000));
     rows
 }
 
@@ -317,40 +484,122 @@ fn find_in_folder(root: &Path, query: &str) -> Vec<(i32, PathBuf)> {
     found
 }
 
+/// What Spotty knows about Drive right now.
+pub enum DriveView {
+    SignedOut,
+    Indexing(usize),
+    Failed(String),
+    Ready(Vec<Hit>),
+}
+
 pub fn drive_search(query: &str, config: &Config) -> Vec<SearchResult> {
+    let view = if !proton_native::signed_in() {
+        DriveView::SignedOut
+    } else {
+        proton_native::drive_ensure_index();
+        let (progress, count, error) = proton_native::drive_progress();
+        match progress {
+            Progress::Failed => DriveView::Failed(error),
+            Progress::Ready => DriveView::Ready(proton_native::drive_search(query, 10)),
+            // Names found so far are already useful while the rest loads.
+            _ => DriveView::Indexing(count),
+        }
+    };
+    let partial = if matches!(view, DriveView::Indexing(_)) { proton_native::drive_search(query, 10) } else { Vec::new() };
+    drive_rows(query, config, view, partial)
+}
+
+fn hit_row(hit: &Hit, rank: usize) -> SearchResult {
+    let node = &hit.node;
+    let size = node.size.filter(|_| !node.folder).map(|bytes| format!(" · {}", human_size(bytes))).unwrap_or_default();
+    native_row(
+        node.name.clone(),
+        format!("{}{size}", hit.location),
+        if node.folder { "folder-symbolic" } else { "text-x-generic-symbolic" },
+        if node.folder { "drive" } else { "download" },
+        &node.id,
+        100_100 - rank as i32,
+    )
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1000.0 && unit < UNITS.len() - 1 {
+        value /= 1000.0;
+        unit += 1;
+    }
+    if unit == 0 { format!("{bytes} B") } else { format!("{value:.1} {}", UNITS[unit]) }
+}
+
+fn drive_rows(query: &str, config: &Config, view: DriveView, partial: Vec<Hit>) -> Vec<SearchResult> {
     let slot = config.proton_drive_account;
-    let mut rows = vec![SearchResult {
-        kind: ResultKind::Web,
-        title: gettext("Open Proton Drive"),
-        subtitle: Some(gettext("Your files, in Spotty · try trash, shared, photos")),
-        icon: Some("folder-remote-symbolic".into()),
-        action: Action::OpenProtonWeb(drive_url(slot)),
-        score: 100_000,
-    }];
-    // Places in Drive, offered when nothing is typed or what is typed starts one.
+    if matches!(view, DriveView::SignedOut) {
+        let mut rows = vec![sign_in_row("proton-drive", "folder-remote-symbolic", 100_000)];
+        rows.push(browser_row(
+            gettext("Open Proton Drive in your browser"),
+            gettext("drive.proton.me"),
+            "web-browser-symbolic",
+            drive_url(slot),
+            99_000,
+        ));
+        rows.extend(synced_folder_rows(query, config));
+        return rows;
+    }
+    let mut rows = vec![native_row(
+        gettext("Open Proton Drive"),
+        gettext("Browse My files — names are decrypted on this computer"),
+        "folder-remote-symbolic",
+        "drive",
+        "",
+        100_000,
+    )];
+    match view {
+        DriveView::SignedOut => {}
+        DriveView::Indexing(count) => rows.push(message_row(
+            gettext("Reading your Drive…"),
+            gettext("{count} items so far").replace("{count}", &count.to_string()),
+            "content-loading-symbolic",
+            99_990,
+        )),
+        DriveView::Failed(error) => rows.push(message_row(gettext("Couldn't read your Drive"), error, "dialog-warning-symbolic", 99_990)),
+        DriveView::Ready(hits) => {
+            if !query.trim().is_empty() && hits.is_empty() {
+                rows.push(message_row(gettext("No matching file"), gettext("Searched every folder in My files"), "system-search-symbolic", 99_990));
+            }
+            rows.extend(hits.iter().enumerate().map(|(rank, hit)| hit_row(hit, rank)));
+        }
+    }
+    rows.extend(partial.iter().enumerate().map(|(rank, hit)| hit_row(hit, rank)));
+    // Places that exist only in Proton's web app open in your browser.
     let lower = query.trim().to_lowercase();
     for (rank, (word, title, path)) in DRIVE_PLACES.iter().enumerate() {
         let named = !lower.is_empty() && (word.starts_with(&lower) || title.to_lowercase().starts_with(&lower));
         if lower.is_empty() || named {
-            rows.push(SearchResult {
-                kind: ResultKind::Web,
-                title: gettext(title),
-                subtitle: Some(gettext("Proton Drive in Spotty")),
-                icon: Some("folder-remote-symbolic".into()),
-                action: Action::OpenProtonWeb(drive_place_url(slot, path)),
-                score: if named { 100_050 - rank as i32 } else { 99_900 - rank as i32 },
-            });
+            rows.push(browser_row(
+                gettext(title),
+                gettext("Opens in your browser"),
+                "folder-remote-symbolic",
+                drive_place_url(slot, path),
+                if named { 100_050 - rank as i32 } else { 99_900 - rank as i32 },
+            ));
         }
     }
-    let Some(folder) = drive_folder(config) else { return rows };
-    rows.push(SearchResult {
+    rows.extend(synced_folder_rows(query, config));
+    rows
+}
+
+fn synced_folder_rows(query: &str, config: &Config) -> Vec<SearchResult> {
+    let Some(folder) = drive_folder(config) else { return Vec::new() };
+    let mut rows = vec![SearchResult {
         kind: ResultKind::Folder,
         title: gettext("Open synced Proton Drive folder"),
         subtitle: Some(folder.display().to_string()),
         icon: Some("folder-symbolic".into()),
         action: Action::OpenPath(folder.clone()),
-        score: 99_999,
-    });
+        score: 99_800,
+    }];
     let query = query.trim();
     if query.is_empty() {
         return rows;
@@ -364,7 +613,7 @@ pub fn drive_search(query: &str, config: &Config) -> Vec<SearchResult> {
             subtitle: Some(relative.display().to_string()),
             icon: Some(if is_dir { "folder-symbolic" } else { "text-x-generic-symbolic" }.into()),
             action: Action::OpenPath(path),
-            score: 100_100 + score * 100 - rank as i32,
+            score: 99_700 + score * 10 - rank as i32,
         });
     }
     rows
@@ -696,10 +945,8 @@ pub fn ghost_for(res: &SearchResult, typed: &str) -> Option<String> {
             VpnTarget::Fastest => None,
         },
         Action::OpenProtonVpn if prefix.is_empty() => first_word(&CONTROL_WORDS),
-        Action::OpenProtonWeb(url) if url.starts_with("https://calendar.proton.me/") && prefix.is_empty() => {
-            first_word(&CALENDAR_WORDS)
-        }
-        Action::OpenProtonWeb(url) if url.starts_with("https://drive.proton.me/") && prefix.is_empty() => {
+        Action::ProtonNative { op, .. } if op == "calendar" && prefix.is_empty() => first_word(&CALENDAR_WORDS),
+        Action::ProtonNative { op, target } if op == "drive" && target.is_empty() && prefix.is_empty() => {
             first_word(&DRIVE_PLACES.map(|(word, ..)| word))
         }
         _ => None,
@@ -710,9 +957,7 @@ pub fn ghost_for(res: &SearchResult, typed: &str) -> Option<String> {
 pub fn owns_ghost(res: &SearchResult) -> bool {
     match &res.action {
         Action::ProtonVpn { .. } | Action::OpenProtonVpn => true,
-        Action::OpenProtonWeb(url) => {
-            url.starts_with("https://calendar.proton.me/") || url.starts_with("https://drive.proton.me/")
-        }
+        Action::ProtonNative { op, target } => op == "calendar" || (op == "drive" && target.is_empty()),
         _ => false,
     }
 }
@@ -889,11 +1134,15 @@ mod tests {
     fn calendar_rows_use_the_phrase_view_and_default_the_rest() {
         let mut config = Config::default();
         config.proton_calendar_view = "day".into();
-        let rows = calendar_search("next month", &config);
-        assert!(matches!(&rows[0].action, Action::OpenProtonWeb(url) if url.contains("/month/")));
-        assert!(matches!(&rows.last().unwrap().action, Action::OpenProtonWeb(url) if url.contains("/day/")));
-        // Nothing typed also offers the other views.
-        assert_eq!(calendar_search("", &config).len(), 3);
+        let now = thursday();
+        let rows = calendar_rows("next month", &config, Some(&now), CalendarView::Ready(Vec::new()));
+        assert!(matches!(&rows[0].action, Action::ProtonNative { op, target } if op == "calendar" && target == "2026-11-01"));
+        assert!(rows[0].title.contains("Sunday 1 November 2026"));
+        // Nothing typed opens today's agenda and says when nothing is coming up.
+        let rows = calendar_rows("", &config, Some(&now), CalendarView::Ready(Vec::new()));
+        assert!(matches!(&rows[0].action, Action::ProtonNative { op, target } if op == "calendar" && target == "2026-10-08"));
+        assert!(rows.iter().any(|r| r.title == "Nothing coming up"));
+        assert!(matches!(&rows.last().unwrap().action, Action::OpenUrl(url) if url.starts_with("https://calendar.proton.me/")));
     }
 
     #[test]
@@ -920,9 +1169,10 @@ mod tests {
         let mut config = Config::default();
         config.proton_drive_folder = root.display().to_string();
 
-        let rows = drive_search("receipt", &config);
+        let rows = drive_rows("receipt", &config, DriveView::SignedOut, Vec::new());
         let _ = std::fs::remove_dir_all(&root);
-        assert!(matches!(rows[0].action, Action::OpenProtonWeb(_)));
+        // Signed out, the first row leads to Spotty's sign-in, not a web page.
+        assert!(matches!(&rows[0].action, Action::ProtonNative { op, target } if op == "settings" && target == "proton-drive"));
         let files: Vec<_> = rows.iter().filter(|r| r.kind == ResultKind::File).collect();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].title, "receipt.pdf");
@@ -1061,8 +1311,95 @@ mod tests {
         assert_eq!(ghost("sta").as_deref(), Some("status"));
         assert_eq!(ghost("ch#2").as_deref(), None);
         assert_eq!(ghost("Germany"), None);
-        let calendar = calendar_search("tom", &config);
+        let calendar = calendar_rows("tom", &config, Some(&thursday()), CalendarView::Ready(Vec::new()));
         assert_eq!(calendar.iter().find_map(|row| ghost_for(row, "tom")).as_deref(), Some("tomorrow"));
-        assert!(calendar.iter().all(owns_ghost));
+        assert!(owns_ghost(&calendar[0]));
     }
+    fn event(title: &str, start: &str, end: &str) -> Event {
+        let unix = |text: &str| {
+            let (date, time) = text.split_once(' ').unwrap();
+            let d: Vec<i32> = date.split('-').map(|v| v.parse().unwrap()).collect();
+            let t: Vec<i32> = time.split(':').map(|v| v.parse().unwrap()).collect();
+            glib::DateTime::from_local(d[0], d[1], d[2], t[0], t[1], 0.0).unwrap().to_unix()
+        };
+        Event {
+            id: "e".into(),
+            calendar: "Personal".into(),
+            color: "#8080ff".into(),
+            title: title.into(),
+            location: "Main St 1\nSecond line".into(),
+            description: String::new(),
+            start: unix(start),
+            end: unix(end),
+            all_day: false,
+        }
+    }
+
+    #[test]
+    fn upcoming_events_become_rows_and_finished_ones_are_left_out() {
+        let now = thursday(); // 12:00
+        let events = vec![
+            event("Standup", "2026-10-08 09:00", "2026-10-08 09:15"),
+            event("Dentist", "2026-10-08 15:00", "2026-10-08 16:00"),
+            event("Offsite", "2026-10-09 10:00", "2026-10-10 17:00"),
+        ];
+        let rows = calendar_rows("", &Config::default(), Some(&now), CalendarView::Ready(events.clone()));
+        let titles: Vec<&str> = rows.iter().map(|r| r.title.as_str()).collect();
+        assert!(!titles.contains(&"Standup"), "{titles:?}");
+        assert_eq!(rows[1].title, "Dentist");
+        assert_eq!(rows[1].subtitle.as_deref(), Some("Today 15:00–16:00 · Main St 1 · Personal"));
+        assert_eq!(rows[2].subtitle.as_deref(), Some("Tomorrow 10:00 → Sat 10 Oct 17:00 · Main St 1 · Personal"));
+        assert!(matches!(&rows[2].action, Action::ProtonNative { op, target } if op == "calendar" && target == "2026-10-09"));
+
+        // Typing words searches titles and places across the cached events.
+        let found = calendar_rows("dent", &Config::default(), Some(&now), CalendarView::Ready(events));
+        assert_eq!(found[1].title, "Dentist");
+        assert!(found.iter().all(|r| r.title != "Offsite"));
+        assert!(found.iter().all(|r| r.score <= 100_000));
+    }
+
+    #[test]
+    fn all_day_events_read_their_date_not_a_time() {
+        let all_day = Event {
+            all_day: true,
+            start: glib::DateTime::from_utc(2026, 10, 9, 0, 0, 0.0).unwrap().to_unix(),
+            end: glib::DateTime::from_utc(2026, 10, 10, 0, 0, 0.0).unwrap().to_unix(),
+            ..event("Holiday", "2026-10-09 00:00", "2026-10-10 00:00")
+        };
+        assert_eq!(when_text(&all_day, &thursday()), "Tomorrow · All day");
+    }
+
+    #[test]
+    fn calendar_states_before_events_arrive() {
+        let config = Config::default();
+        let now = thursday();
+        let signed_out = calendar_rows("", &config, Some(&now), CalendarView::SignedOut);
+        assert!(matches!(&signed_out[0].action, Action::ProtonNative { op, target } if op == "settings" && target == "proton-calendar"));
+        let loading = calendar_rows("", &config, Some(&now), CalendarView::Loading);
+        assert!(loading.iter().any(|r| r.title.starts_with("Loading")));
+        let failed = calendar_rows("", &config, Some(&now), CalendarView::Failed("offline".into()));
+        assert!(failed.iter().any(|r| r.subtitle.as_deref() == Some("offline")));
+    }
+
+    #[test]
+    fn drive_hits_open_folders_and_download_files() {
+        let mut folder = proton_native::Node::for_tests("f1", Some("root"), "Taxes");
+        folder.size = None;
+        let mut file = proton_native::Node::for_tests("f2", Some("f1"), "receipt.pdf");
+        file.folder = false;
+        file.size = Some(1_500_000);
+        let hits = vec![
+            Hit { node: folder, location: "My files".into() },
+            Hit { node: file, location: "My files / Taxes".into() },
+        ];
+        let rows = drive_rows("r", &Config::default(), DriveView::Ready(hits), Vec::new());
+        assert!(matches!(&rows[0].action, Action::ProtonNative { op, target } if op == "drive" && target.is_empty()));
+        assert!(matches!(&rows[1].action, Action::ProtonNative { op, target } if op == "drive" && target == "f1"));
+        assert!(matches!(&rows[2].action, Action::ProtonNative { op, target } if op == "download" && target == "f2"));
+        assert_eq!(rows[2].subtitle.as_deref(), Some("My files / Taxes · 1.5 MB"));
+        let none = drive_rows("zzz", &Config::default(), DriveView::Ready(Vec::new()), Vec::new());
+        assert!(none.iter().any(|r| r.title == "No matching file"));
+        assert_eq!(human_size(999), "999 B");
+    }
+
 }

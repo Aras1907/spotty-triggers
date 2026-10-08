@@ -1,16 +1,12 @@
-//! Proton Calendar and Proton Drive inside Spotty. Proton ships no Linux
-//! desktop client for either, so Spotty shows Proton's own web apps in a
-//! window of its own, rendered by the system's WebKitGTK (loaded at runtime;
-//! nothing to install for Spotty's build). Sign-in happens on Proton's own
-//! page in that window and stays in Spotty's private web profile
-//! (`~/.local/share/spotty/proton-web`), shared by Calendar and Drive, so one
-//! sign-in covers both. Spotty never sees the password.
+//! A window that shows a Proton web page (for example the Proton Pass web app)
+//! inside Spotty, rendered by the system's WebKitGTK (loaded at runtime;
+//! nothing to install for Spotty's build). It keeps its own private web
+//! profile (`~/.local/share/spotty/proton-web`).
 //!
-//! Without WebKitGTK 6 on the system, links open in the default browser.
-//!
-//! Spotty also remembers *that* you are signed in (an empty marker file next
-//! to the profile, never the session itself): installing another Proton
-//! integration afterwards can then sign in on its own, as Proton Pass does.
+//! It is not used to sign in: Proton Calendar, Drive, Pass and VPN sign in
+//! natively through Spotty's Proton account (`crate::proton_native`,
+//! `crate::proton_session`). Without WebKitGTK 6, links open in the default
+//! browser.
 
 use crate::i18n::gettext;
 use adw::prelude::*;

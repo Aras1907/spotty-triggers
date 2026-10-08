@@ -5,11 +5,11 @@
   "description": "Proton VPN built into Spotty: sign in, pick a country and connect",
   "icon": "network-vpn-symbolic",
   "shortcut": "",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "author": "spotty",
   "native": true,
   "preinstalled": false,
-  "help": "Proton VPN, built into Spotty\n\nInstalling adds the `vpn` trigger and a Proton VPN row under Settings → Search → Services and integrations. Spotty includes Proton's official Linux VPN client library, so no separate Proton app or CLI is needed.\n\nSign in once in the Proton VPN window with your Proton username and password (and your authenticator code if you use two-factor). Spotty passes the password straight to Proton's client and never stores it; Proton keeps the session in your keyring.\n\nTrigger words: `vpn on` connects to your preferred country or the fastest server; `vpn off` disconnects; start typing a country (`vpn ge` → Germany, Georgia…) or a city (`vpn zur` → Zurich) for suggestions as you type; `vpn CH#242` connects to a server; `vpn status` opens the window. Results arrive as a notification.\n\nThe window shows the connection, a country picker, your preferred country, and Proton's settings: protocol, NetShield, kill switch, VPN Accelerator, Moderate NAT, port forwarding and IPv6.\n\nUninstalling removes the trigger and controls; an active connection stays up until you disconnect.",
+  "help": "Proton VPN, built into Spotty\n\nInstalling adds the `vpn` trigger and a Proton VPN row under Settings → Search → Services and integrations. Spotty includes Proton's official Linux VPN client library, so no separate Proton app or CLI is needed.\n\nIf you're signed in to your Proton account in Spotty, Proton VPN signs in by itself: Spotty gives it a session of its own (a Proton session fork) — no password is shared or stored, and signing out of the Proton account ends it. Otherwise sign in from the Proton VPN window: with your Proton account (one sign-in for all Proton apps), or to Proton VPN only with your username, password and authenticator code. Proton keeps the VPN session in your keyring.\n\nTrigger words: `vpn on` connects to your preferred country or the fastest server; `vpn off` disconnects; start typing a country (`vpn ge` → Germany, Georgia…) or a city (`vpn zur` → Zurich) for suggestions as you type; `vpn CH#242` connects to a server; `vpn status` opens the window. Results arrive as a notification.\n\nThe window shows the connection, a country picker, your preferred country, and Proton's settings: protocol, NetShield, kill switch, VPN Accelerator, Moderate NAT, port forwarding and IPv6.\n\nUninstalling removes the trigger and controls; an active connection stays up until you disconnect.",
   "action": {
     "type": "native"
   },

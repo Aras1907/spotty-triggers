@@ -2,14 +2,14 @@
   "id": "proton-calendar",
   "name": "Proton Calendar",
   "word": "cal",
-  "description": "Proton Calendar built into Spotty: sign in once, jump to today, tomorrow, friday or any date",
+  "description": "Proton Calendar built into Spotty: sign in natively, see what is coming up, jump to any day",
   "icon": "x-office-calendar-symbolic",
   "shortcut": "",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "author": "spotty",
   "native": true,
   "preinstalled": false,
-  "help": "Proton Calendar, built into Spotty\n\nInstalling adds the `cal` trigger and a Proton Calendar row under Settings → Search → Services and integrations. `cal` opens Proton Calendar on today in Spotty's own Proton window; type when you mean to jump straight there: `cal tomorrow`, `cal friday`, `cal next week`, `cal next month`, `cal +3d`, `cal in 2 weeks`, `cal 24 oct` or `cal 2026-10-24`. `cal week` or `cal month` opens today in that view.\n\nSign in once on Proton's own sign-in page inside that window (two-factor works as on the web). Spotty keeps the session in its private Proton web profile, shared with Proton Drive and Proton Pass, so you stay signed in and any Proton app you install later finds you already signed in; Spotty never sees or stores your password. Settings → Proton Calendar has Sign in and Sign out, the default view (day, week or month) and which Proton account to open.\n\nProton has no Linux desktop calendar app, so Spotty shows Proton's own web app using the system's WebKitGTK; without WebKitGTK it opens in your browser. Uninstalling removes the trigger only.",
+  "help": "Proton Calendar, built into Spotty\n\nInstalling adds the `cal` trigger and a Proton Calendar row under Settings → Search → Services and integrations. `cal` lists your next events; say when you mean to look: `cal tomorrow`, `cal friday`, `cal next week`, `cal +3d`, `cal in 2 weeks`, `cal 24 oct` or `cal 2026-10-24`; other words search the next two months (`cal dentist`). Enter opens Spotty's agenda window with day, week and month views and event details.\n\nSign in once with your Proton account (the Proton account window: email, password and your authenticator code if you use one); the same sign-in serves Proton Calendar, Drive, Pass and VPN. Spotty talks to Proton itself — no web page and no helper program. Your password becomes a one-time proof and is never stored; Spotty saves Proton's session and a key password in an owner-only file and decrypts events on this computer, in memory only. Accounts protected only by a hardware security key can't sign in yet. Uninstalling removes the trigger only; Sign out in the settings ends the session and deletes the saved sign-in.",
   "action": {
     "type": "native"
   },

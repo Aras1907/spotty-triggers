@@ -7,15 +7,16 @@ from the bundle compiled into Spotty and speaks JSON lines with Spotty:
     reply    {"id": 1, "ok": true, "data": {...}}  or  {"id": 1, "ok": false, "error": "..."}
     event    {"event": "state", "data": {...}}
 
-Passwords and 2FA codes arrive only over stdin and go straight to Proton's
-library; nothing here stores them. Proton's library keeps the session in the
-desktop keyring, exactly as Proton's own app does.
+Passwords, 2FA codes and session-fork selectors arrive only over stdin and go
+straight to Proton's library; nothing here stores them. Proton's library keeps
+the session in the desktop keyring, exactly as Proton's own app does.
 
 Usage: python3 -I spotty_vpn_helper.py <bundle dir> <cache dir>
 """
 import asyncio
 import json
 import os
+import re
 import sys
 import threading
 
@@ -43,6 +44,10 @@ PROTOCOL_LABELS = {
     "openvpn-udp": "OpenVPN (UDP)",
     "openvpn-tcp": "OpenVPN (TCP)",
 }
+
+# Session-fork selectors are URL-safe; the check also keeps them from changing
+# the API path they are put into.
+SELECTOR_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,256}")
 
 
 class Client:
@@ -153,6 +158,44 @@ class Client:
     async def cmd_submit_2fa(self, args):
         result = await self.api.submit_2fa_code(args["code"])
         return await self.finish_login(result)
+
+    async def cmd_import_fork(self, args):
+        """Sign in with a session fork that Spotty's own Proton sign-in made for
+        this client, so the password isn't asked for again. The selector is a
+        one-time handle that Proton exchanges for the session; it is never
+        logged or sent back."""
+        selector, username = args.get("selector"), args.get("username")
+        if not isinstance(selector, str) or not SELECTOR_PATTERN.fullmatch(selector):
+            return {"step": "failed", "error": "The sign-in handoff is invalid. Try again."}
+        if not isinstance(username, str) or not 0 < len(username.strip()) <= 256:
+            return {"step": "failed", "error": "The Proton account name is invalid."}
+        username = username.strip()
+        try:
+            # Same session lookup as ProtonVPNAPI.login: the account's stored
+            # session if there is one, otherwise an empty session for it.
+            session = self.api._session_holder.get_session_for(username)
+            # async_import_fork() sets the tokens but not the account name, and
+            # its unlock saves a session only when it has one, so without this
+            # the sign-in would vanish on restart. authenticate() sets this same
+            # attribute on a password login. Setting it before the import lets
+            # the import's own lock and unlock save the session to the keyring
+            # under this account, as a password login does.
+            session._Session__AccountName = username  # pylint: disable=protected-access
+            await session.async_import_fork(selector)
+            if session.needs_twofa:
+                # Proton wants a 2FA code first; submit_2fa finishes the sign-in.
+                return {"step": "2fa"}
+            # Always refresh, unlike a password login that skips it when the VPN
+            # data is already loaded: the imported tokens may belong to another
+            # session than the one that data was fetched with.
+            await session.fetch_session_data()
+            await self.enable_refresher()
+            return {"step": "done"}
+        except Exception as error:  # pylint: disable=broad-except
+            # The error text can contain the request URL, which holds the
+            # selector, so only the error type is logged.
+            print(f"spotty-vpn: import_fork failed: {type(error).__name__}", file=sys.stderr)
+            return {"step": "failed", "error": "Couldn't finish signing in to Proton VPN. Try again."}
 
     async def cmd_logout(self, _args):
         if self.connector and self.connector.is_connection_active:

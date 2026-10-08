@@ -3,3 +3,5 @@
 /.integration/
 /proton-bridge-gui/target/
 /proton-bridge-gui/__pycache__/
+/proton-account/target/
+/proton-account/Cargo.lock
