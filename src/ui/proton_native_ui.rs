@@ -129,10 +129,12 @@ pub fn open_account_window(parent: Option<&gtk::Window>) {
         .title(gettext("Proton account"))
         .default_width(560)
         .default_height(720)
-        .modal(true)
         .build();
+    // Modal only over the window that opened it: a modal window without a
+    // parent would block every other Spotty window, the search window included.
     if let Some(parent) = parent.filter(|p| p.is_visible()) {
         window.set_transient_for(Some(parent));
+        window.set_modal(true);
     }
     let header = adw::HeaderBar::builder()
         .title_widget(&adw::WindowTitle::new(&gettext("Proton account"), &gettext("Built into Spotty")))
@@ -152,6 +154,15 @@ pub fn open_account_window(parent: Option<&gtk::Window>) {
     let credentials = adw::PreferencesGroup::builder().title(gettext("Sign in")).build();
     let username = adw::EntryRow::builder().title(gettext("Proton email or username")).input_purpose(gtk::InputPurpose::Email).build();
     let password = adw::PasswordEntryRow::builder().title(gettext("Password")).build();
+    // Already signed in to Pass or VPN: start from that account's email. Only
+    // the address is reused; the password is always typed here.
+    let known_email = crate::proton_vpn::cached_status()
+        .map(|s| s.account)
+        .filter(|a| !a.is_empty())
+        .or_else(|| Some(crate::proton_pass::account()).filter(|a| !a.is_empty()));
+    if let Some(email) = known_email {
+        username.set_text(&email);
+    }
     credentials.add(&username);
     credentials.add(&password);
     let sign_in = gtk::Button::builder()
@@ -652,6 +663,35 @@ fn signed_out_page(service: &str, parent: gtk::Window) -> adw::StatusPage {
     page
 }
 
+/// Keep a browser window (Drive, agenda) clickable. GTK blocks input to every
+/// window in a modal window's group while that modal window is visible, and all
+/// of Spotty's windows share one group by default: opened from the modal Proton
+/// settings popup, the account window or the search window, the browser
+/// couldn't even be closed. Its own group takes it out of their reach.
+fn own_window(window: &adw::ApplicationWindow, parent: Option<&gtk::Window>) {
+    if let Some(parent) = parent.filter(|p| p.is_visible()) {
+        window.set_transient_for(Some(parent));
+    }
+    gtk::WindowGroup::new().add_window(window);
+}
+
+/// While a window shows its signed-out page, move on as soon as Spotty is
+/// signed in to Proton (from any window), so every Proton window follows the
+/// one sign-in.
+fn follow_sign_in(window: &adw::ApplicationWindow, stack: &gtk::Stack, signed_in: impl Fn() + 'static) {
+    let window = window.downgrade();
+    let stack = stack.downgrade();
+    glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
+        let (Some(_window), Some(stack)) = (window.upgrade(), stack.upgrade()) else {
+            return glib::ControlFlow::Break;
+        };
+        if stack.visible_child_name().as_deref() == Some("signedout") && native::signed_in() {
+            signed_in();
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
 /// Only "#rrggbb" may enter Pango markup.
 fn valid_color(color: &str) -> bool {
     color.len() == 7 && color.starts_with('#') && color[1..].chars().all(|c| c.is_ascii_hexdigit())
@@ -687,9 +727,7 @@ struct DriveWindow {
 pub fn open_drive(parent: Option<&gtk::Window>, folder_id: &str) {
     let Some(app) = application() else { return };
     let window = adw::ApplicationWindow::builder().application(&app).title(gettext("Proton Drive")).default_width(760).default_height(680).build();
-    if let Some(parent) = parent.filter(|p| p.is_visible()) {
-        window.set_transient_for(Some(parent));
-    }
+    own_window(&window, parent);
     let back = gtk::Button::from_icon_name("go-previous-symbolic");
     back.set_tooltip_text(Some(&gettext("Up one folder")));
     let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
@@ -746,6 +784,15 @@ pub fn open_drive(parent: Option<&gtk::Window>, folder_id: &str) {
         retry.connect_clicked(move |_| d.reload());
         let d = drive.clone();
         filter.connect_search_changed(move |entry| d.apply_filter(&entry.text()));
+    }
+    {
+        let weak = Rc::downgrade(&drive);
+        let folder_id = folder_id.to_owned();
+        follow_sign_in(&window, &drive.stack, move || {
+            if let Some(d) = weak.upgrade() {
+                d.start(folder_id.clone());
+            }
+        });
     }
     window.present();
     drive.start(folder_id.to_owned());
@@ -950,9 +997,7 @@ pub fn open_agenda(parent: Option<&gtk::Window>, date: &str) {
     let Some(anchor) = anchor else { return };
 
     let window = adw::ApplicationWindow::builder().application(&app).title(gettext("Proton Calendar")).default_width(620).default_height(720).build();
-    if let Some(parent) = parent.filter(|p| p.is_visible()) {
-        window.set_transient_for(Some(parent));
-    }
+    own_window(&window, parent);
     let previous = gtk::Button::from_icon_name("go-previous-symbolic");
     previous.set_tooltip_text(Some(&gettext("Previous")));
     let next = gtk::Button::from_icon_name("go-next-symbolic");
@@ -1016,6 +1061,14 @@ pub fn open_agenda(parent: Option<&gtk::Window>, date: &str) {
         view_picker.connect_selected_notify(move |picker| {
             if let Some(name) = crate::search::proton::CALENDAR_VIEWS.get(picker.selected() as usize) {
                 *a.view.borrow_mut() = (*name).to_owned();
+                a.reload();
+            }
+        });
+    }
+    {
+        let weak = Rc::downgrade(&agenda);
+        follow_sign_in(&window, &agenda.stack, move || {
+            if let Some(a) = weak.upgrade() {
                 a.reload();
             }
         });
