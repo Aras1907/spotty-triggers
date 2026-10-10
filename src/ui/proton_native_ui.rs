@@ -148,7 +148,7 @@ pub fn open_account_window(parent: Option<&gtk::Window>) {
     // Sign in
     let signin_page = adw::PreferencesPage::new();
     let intro = adw::PreferencesGroup::builder()
-        .description(gettext("One sign-in for Proton Calendar, Drive, Pass and VPN in Spotty. Pass and VPN you already signed in to keep working; sign in here once so Calendar and Drive join them. Your password is turned into a one-time proof and never stored."))
+        .description(gettext("One sign-in for Proton Calendar, Drive, Pass and VPN in Spotty. Signed in to Proton Mail Bridge, Pass or VPN already? Enter your password here once and Calendar and Drive join them. Signing in to Bridge in Spotty signs in the rest too. Your password is turned into a one-time proof and never stored."))
         .build();
     intro.set_header_suffix(Some(&gtk::Image::builder().icon_name("avatar-default-symbolic").pixel_size(32).build()));
     let credentials = adw::PreferencesGroup::builder().title(gettext("Sign in")).build();
@@ -159,7 +159,8 @@ pub fn open_account_window(parent: Option<&gtk::Window>) {
     let known_email = crate::proton_vpn::cached_status()
         .map(|s| s.account)
         .filter(|a| !a.is_empty())
-        .or_else(|| Some(crate::proton_pass::account()).filter(|a| !a.is_empty()));
+        .or_else(|| Some(crate::proton_pass::account()).filter(|a| !a.is_empty()))
+        .or_else(spotty_proton_bridge_gui::share::account_email);
     if let Some(email) = known_email {
         username.set_text(&email);
     }

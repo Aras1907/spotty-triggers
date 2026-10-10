@@ -158,6 +158,105 @@ pub fn app_signed_in(id: &str) -> bool {
     }
 }
 
+// ── Following a Proton Mail Bridge sign-in ──────────────────────────────────
+//
+// Bridge never gives out its session, so a Bridge sign-in made earlier can't be
+// reused. What Spotty can do is follow a Bridge sign-in made through Spotty:
+// the details the user types for Bridge are kept in memory, and once Bridge is
+// signed in, Spotty signs in to Proton with them and hands that sign-in to
+// Pass and VPN. Waiting for Bridge first means a one-time code reused here can
+// never break Bridge's own sign-in. Nothing is written to disk or logged; the
+// details are dropped when this sign-in finishes, fails or is abandoned.
+
+#[derive(Default)]
+struct BridgeFollow {
+    username: String,
+    password: Zeroizing<String>,
+    code: Option<Zeroizing<String>>,
+    mailbox: Option<Zeroizing<String>>,
+}
+
+static BRIDGE_FOLLOW: Mutex<Option<BridgeFollow>> = Mutex::new(None);
+
+/// Register with the embedded Bridge. Call once at startup.
+pub fn follow_bridge_logins() {
+    use spotty_proton_bridge_gui::rpc::LoginMethod;
+    use spotty_proton_bridge_gui::share::{set_login_observer, LoginEvent};
+    set_login_observer(|event| {
+        let mut follow = BRIDGE_FOLLOW.lock().unwrap_or_else(|p| p.into_inner());
+        match event {
+            LoginEvent::Entered { method: LoginMethod::Password, username, secret } => {
+                // Already signed in to Proton: Bridge's details aren't needed.
+                *follow = (!native::signed_in()).then(|| BridgeFollow {
+                    username: username.to_owned(),
+                    password: Zeroizing::new(secret.to_owned()),
+                    ..Default::default()
+                });
+            }
+            LoginEvent::Entered { method: LoginMethod::TwoFactor, secret, .. } => {
+                if let Some(f) = follow.as_mut() {
+                    f.code = Some(Zeroizing::new(secret.to_owned()));
+                }
+            }
+            LoginEvent::Entered { method: LoginMethod::MailboxPassword, secret, .. } => {
+                if let Some(f) = follow.as_mut() {
+                    f.mailbox = Some(Zeroizing::new(secret.to_owned()));
+                }
+            }
+            // A security key can't be repeated: sign in once in the Proton window.
+            LoginEvent::Entered { method: LoginMethod::SecurityKey, .. } | LoginEvent::Abandoned => *follow = None,
+            LoginEvent::Finished => {
+                if let Some(f) = follow.take() {
+                    std::thread::spawn(move || sign_in_after_bridge(f));
+                }
+            }
+        }
+    });
+}
+
+fn sign_in_after_bridge(follow: BridgeFollow) {
+    if native::signed_in() {
+        return;
+    }
+    let mut outcome = native::sign_in(&follow.username, &follow.password);
+    let mut code = follow.code;
+    let mut mailbox = follow.mailbox;
+    let failure = loop {
+        outcome = match outcome {
+            native::Outcome::Done => break None,
+            native::Outcome::TwoFactor => match code.take() {
+                Some(code) => native::submit_two_factor(&code),
+                None => break Some(gettext("it asked for a two-factor code")),
+            },
+            native::Outcome::MailboxPassword => match mailbox.take() {
+                Some(password) => native::submit_mailbox_password(&password),
+                None => break Some(gettext("it asked for the mailbox password")),
+            },
+            native::Outcome::Failed(error) => break Some(error),
+        };
+    };
+    match failure {
+        None => {
+            glib::MainContext::default().invoke(|| {
+                share_sign_in();
+                crate::app::refresh_search_window();
+            });
+            notify(
+                &gettext("Proton"),
+                &gettext("Signed in to Proton Calendar, Drive, Pass and VPN with your Proton Mail Bridge sign-in."),
+            );
+        }
+        Some(error) => {
+            native::cancel_sign_in();
+            log::warn!("Proton sign-in after Bridge didn't finish: {error}");
+            notify(
+                &gettext("Proton"),
+                &gettext("Proton Mail Bridge is signed in. Sign in once in the Proton account window to add Calendar, Drive, Pass and VPN."),
+            );
+        }
+    }
+}
+
 // ── Signing in, as seen by the UI ───────────────────────────────────────────
 
 static SIGNING_IN: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());

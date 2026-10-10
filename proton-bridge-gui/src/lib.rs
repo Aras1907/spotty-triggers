@@ -4,6 +4,7 @@ pub mod engine;
 pub mod gui;
 pub mod rpc;
 pub mod session;
+pub mod share;
 
 pub mod protocol {
     tonic::include_proto!("grpc");
