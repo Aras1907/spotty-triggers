@@ -1,17 +1,20 @@
-//! Spotty's native Proton windows: the Proton account window (one sign-in for
-//! every Proton app), a Proton Drive browser and a Proton Calendar agenda. All
-//! of it is plain libadwaita on top of `crate::proton_native` — no web view, no
-//! browser, no helper program.
+//! Spotty's native Proton windows: the Proton Calendar and Proton Drive sign-in
+//! windows (each app signs in on its own), a Proton Drive browser and a Proton
+//! Calendar agenda. All of it is plain libadwaita on top of
+//! `crate::proton_native` — no web view, no browser, no helper program.
 
 use crate::i18n::gettext;
 use crate::proton_native as native;
 use adw::prelude::*;
 use gtk::{gio, glib};
+use spotty_proton_login as login;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
+use login::Zeroizing;
 
 /// Run `work` on a worker thread and hand its result to `done` on the GTK thread.
-fn run<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static, done: impl FnOnce(T) + 'static) {
+pub(crate) fn run<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static, done: impl FnOnce(T) + 'static) {
     glib::MainContext::default().spawn_local(async move {
         if let Ok(result) = gio::spawn_blocking(work).await {
             done(result);
@@ -50,8 +53,13 @@ pub fn handle(parent: Option<&gtk::Window>, op: &str, target: &str) {
 
 fn open_settings(parent: Option<&gtk::Window>, service: &str) {
     // Calendar and Drive have nothing to set up until you are signed in.
-    if matches!(service, "proton-calendar" | "proton-drive") && !native::signed_in() {
-        open_account_window(parent);
+    let native_service = match service {
+        "proton-calendar" => Some(native::Service::Calendar),
+        "proton-drive" => Some(native::Service::Drive),
+        _ => None,
+    };
+    if let Some(native_service) = native_service.filter(|s| !native::signed_in(*s)) {
+        open_account_window(parent, native_service);
         return;
     }
     crate::ui::settings_window::show_proton_service_settings_for(parent, service);
@@ -73,572 +81,203 @@ pub fn download_and_open(id: &str) {
     });
 }
 
-// ── Proton account window ───────────────────────────────────────────────────
+// ── Proton sign-in (Calendar and Drive) ─────────────────────────────────────
+//
+// Every Proton app shows the same sign-in page (`spotty_proton_login`). Here
+// it is wired to Calendar's or Drive's own sign-in in `crate::proton_native`.
 
 thread_local! {
-    /// The open account window, if any. Closing it destroys it and clears this.
-    static ACCOUNT_WINDOW: RefCell<Option<glib::WeakRef<adw::ApplicationWindow>>> = RefCell::new(None);
+    /// The open sign-in windows, one per app. Closing one clears its slot.
+    static ACCOUNT_WINDOWS: RefCell<Vec<(native::Service, glib::WeakRef<adw::ApplicationWindow>)>> = RefCell::new(Vec::new());
 }
 
-/// The Proton integrations, in the order the account window lists them.
-const APPS: [(&str, &str); 4] = [
-    ("proton-vpn", "network-vpn-symbolic"),
-    ("proton-pass", "dialog-password-symbolic"),
-    ("proton-calendar", "x-office-calendar-symbolic"),
-    ("proton-drive", "folder-symbolic"),
-];
+/// Where "Create a free Proton account" goes.
+pub const SIGNUP_URL: &str = "https://account.proton.me/signup";
 
-fn app_name(id: &str) -> String {
-    match id {
-        "proton-vpn" => gettext("Proton VPN"),
-        "proton-pass" => gettext("Proton Pass"),
-        "proton-calendar" => gettext("Proton Calendar"),
-        _ => gettext("Proton Drive"),
+/// The app's name as shown to the user.
+fn service_name(service: native::Service) -> String {
+    match service {
+        native::Service::Calendar => gettext("Proton Calendar"),
+        native::Service::Drive => gettext("Proton Drive"),
     }
 }
 
-/// Whether a Proton integration is installed in Spotty.
-fn installed(id: &str) -> bool {
-    crate::app::shared_config().is_some_and(|config| {
-        let config = config.borrow();
-        config.proton_service_enabled(id)
-    })
+/// The app as the shared sign-in page shows it.
+fn login_app(service: native::Service) -> login::App {
+    let icon = match service {
+        native::Service::Calendar => "x-office-calendar-symbolic",
+        native::Service::Drive => "folder-remote-symbolic",
+    };
+    login::App { name: service_name(service), icon: icon.into(), signup_url: SIGNUP_URL.into(), translate: gettext }
 }
 
-/// Whether this Spotty build contains the integration's client.
-fn built(id: &str) -> bool {
-    match id {
-        "proton-pass" => crate::proton_pass::available(),
-        "proton-vpn" => crate::proton_vpn::available(),
-        _ => true,
+/// Calendar's or Drive's own sign-in, as the shared sign-in page calls it.
+struct NativeLogin(native::Service);
+
+impl login::Backend for NativeLogin {
+    fn begin(&self, email: &str, password: Zeroizing<String>) -> login::Step {
+        native_step(native::sign_in(self.0, email, &password))
+    }
+
+    fn submit_code(&self, code: Zeroizing<String>) -> login::Step {
+        native_step(native::submit_two_factor(self.0, &code))
+    }
+
+    fn submit_second(&self, password: Zeroizing<String>) -> login::Step {
+        native_step(native::submit_mailbox_password(self.0, &password))
+    }
+
+    fn cancel(&self) {
+        native::cancel_sign_in(self.0);
     }
 }
 
-/// Open Spotty's Proton account window, or bring the one that is open forward.
-/// It signs you in to Proton, shows what each Proton app has and signs out of
-/// all of them.
-pub fn open_account_window(parent: Option<&gtk::Window>) {
-    let existing = ACCOUNT_WINDOW.with(|slot| slot.borrow().as_ref().and_then(|w| w.upgrade()));
+/// What a Calendar or Drive sign-in step means on the shared sign-in page.
+fn native_step(outcome: native::Outcome) -> login::Step {
+    match outcome {
+        native::Outcome::Done => login::Step::Done,
+        native::Outcome::TwoFactor => login::Step::TwoFactor,
+        native::Outcome::MailboxPassword => login::Step::SecondPassword { title: gettext("Mailbox password"), label: gettext("Mailbox password") },
+        native::Outcome::Failed(message) => login::Step::Failed(message),
+    }
+}
+
+/// The shared sign-in page for one app. `on_done` runs after a sign-in.
+fn login_page(service: native::Service, on_done: impl Fn() + 'static) -> login::LoginPage {
+    login::LoginPage::new(login_app(service), Arc::new(NativeLogin(service)), on_done)
+}
+
+/// Sign this app out (after the user confirmed), then refresh the search.
+fn sign_out_now(service: native::Service) {
+    run(move || native::sign_out(service), |()| crate::app::refresh_search_window());
+}
+
+/// The "Account" group of a signed-in app: its email and a Sign out button.
+fn account_group(service: native::Service) -> Rc<login::Account> {
+    Rc::new(login::Account::new(&login_app(service), &native::account_label(service), move || sign_out_now(service)))
+}
+
+/// The signed-in email, refreshed while the page is on screen.
+fn refresh_email(account: &login::Account, service: native::Service) {
+    if native::signed_in(service) {
+        account.set_email(&native::account_label(service));
+    }
+}
+
+/// Where Calendar's or Drive's sign-in stands. Its saved session loads on a
+/// worker thread, so until that is done the page says it is checking.
+fn session_of(service: native::Service) -> login::Session {
+    if native::signed_in(service) {
+        login::Session::SignedIn
+    } else if native::loaded(service) {
+        login::Session::SignedOut
+    } else {
+        login::Session::Checking
+    }
+}
+
+/// Open the sign-in window of Proton Calendar or Proton Drive, or bring the one
+/// that is open forward. It signs that one app in; no other app is touched.
+pub fn open_account_window(parent: Option<&gtk::Window>, service: native::Service) {
+    let existing = ACCOUNT_WINDOWS.with(|slots| slots.borrow().iter().find(|(s, _)| *s == service).and_then(|(_, w)| w.upgrade()));
     if let Some(window) = existing {
         window.present();
         return;
     }
     let Some(app) = application() else { return };
-    let window = adw::ApplicationWindow::builder()
-        .application(&app)
-        .title(gettext("Proton account"))
-        .default_width(560)
-        .default_height(720)
-        .build();
+    let name = service_name(service);
+    let title = gettext("{app} sign-in").replace("{app}", &name);
+    let window = adw::ApplicationWindow::builder().application(&app).title(&title).default_width(560).default_height(640).build();
     // Not modal: GNOME attaches a modal window to its parent and squares off
     // its top corners, and in Spotty's shared window group another modal
     // window (a Proton settings popup) swallowed its clicks, close included.
     own_window(&window, parent);
-    let header = adw::HeaderBar::builder()
-        .title_widget(&adw::WindowTitle::new(&gettext("Proton account"), &gettext("Built into Spotty")))
-        .build();
-    let banner = adw::Banner::builder().revealed(false).build();
-    let stack = gtk::Stack::builder()
-        .transition_type(gtk::StackTransitionType::Crossfade)
-        .vexpand(true)
-        .build();
+    let header = adw::HeaderBar::builder().title_widget(&adw::WindowTitle::new(&title, &gettext("Built into Spotty"))).build();
 
-    // Sign in
-    let signin_page = adw::PreferencesPage::new();
-    let intro = adw::PreferencesGroup::builder()
-        .description(gettext("One sign-in for Proton Calendar, Drive, Pass and VPN in Spotty. Signed in to Proton Mail Bridge, Pass or VPN already? Enter your password here once and Calendar and Drive join them. Signing in to Bridge in Spotty signs in the rest too. Your password is turned into a one-time proof and never stored."))
+    let account = account_group(service);
+    let account_page = adw::PreferencesPage::new();
+    account_page.add(&account.group);
+    let note = adw::PreferencesGroup::builder()
+        .description(gettext("Signing out ends this app's session only. Your other Proton apps stay signed in."))
         .build();
-    intro.set_header_suffix(Some(&gtk::Image::builder().icon_name("avatar-default-symbolic").pixel_size(32).build()));
-    let credentials = adw::PreferencesGroup::builder().title(gettext("Sign in")).build();
-    let username = adw::EntryRow::builder().title(gettext("Proton email or username")).input_purpose(gtk::InputPurpose::Email).build();
-    let password = adw::PasswordEntryRow::builder().title(gettext("Password")).build();
-    // Already signed in to Pass or VPN: start from that account's email. Only
-    // the address is reused; the password is always typed here.
-    let known_email = crate::proton_vpn::cached_status()
-        .map(|s| s.account)
-        .filter(|a| !a.is_empty())
-        .or_else(|| Some(crate::proton_pass::account()).filter(|a| !a.is_empty()))
-        .or_else(spotty_proton_bridge_gui::share::account_email);
-    if let Some(email) = known_email {
-        username.set_text(&email);
+    account_page.add(&note);
+    let login = {
+        let account = account.clone();
+        login_page(service, move || {
+            refresh_email(&account, service);
+            crate::app::refresh_search_window();
+        })
+    };
+    let stack = {
+        let account = account.clone();
+        login::sign_in_stack(&login, &account_page, move || {
+            refresh_email(&account, service);
+            session_of(service)
+        })
+    };
+    // Closing with a half-finished sign-in ends it, and wipes what was typed.
+    {
+        let login = login.clone();
+        window.connect_close_request(move |_| {
+            login.reset();
+            glib::Propagation::Proceed
+        });
     }
-    credentials.add(&username);
-    credentials.add(&password);
-    let sign_in = gtk::Button::builder()
-        .label(gettext("Sign in"))
-        .css_classes(["suggested-action", "pill"])
-        .halign(gtk::Align::Center)
-        .build();
-    let spinner = gtk::Spinner::builder().visible(false).build();
-    let button_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    button_box.set_halign(gtk::Align::Center);
-    button_box.set_margin_top(12);
-    button_box.append(&sign_in);
-    button_box.append(&spinner);
-    let sign_in_group = adw::PreferencesGroup::new();
-    sign_in_group.add(&button_box);
-    let two_factor = adw::PreferencesGroup::builder()
-        .title(gettext("Two-factor authentication"))
-        .description(gettext("Enter the 6-digit code from your authenticator app, or a recovery code."))
-        .visible(false)
-        .build();
-    let code = adw::EntryRow::builder().title(gettext("Code")).show_apply_button(true).input_purpose(gtk::InputPurpose::Digits).build();
-    two_factor.add(&code);
-    let mailbox = adw::PreferencesGroup::builder()
-        .title(gettext("Mailbox password"))
-        .description(gettext("Your account has a second password that unlocks your data."))
-        .visible(false)
-        .build();
-    let mailbox_password = adw::PasswordEntryRow::builder().title(gettext("Mailbox password")).show_apply_button(true).build();
-    mailbox.add(&mailbox_password);
-    let signup = adw::PreferencesGroup::new();
-    signup.add(&gtk::LinkButton::with_label("https://account.proton.me/signup", &gettext("Create a free Proton account")));
-    for group in [&intro, &credentials, &sign_in_group, &two_factor, &mailbox, &signup] {
-        signin_page.add(group);
-    }
-    stack.add_named(&signin_page, Some("signin"));
+    window.connect_destroy(move |_| ACCOUNT_WINDOWS.with(|slots| slots.borrow_mut().retain(|(s, _)| *s != service)));
 
-    // Signed in
-    let main_page = adw::PreferencesPage::new();
-    let account_group = adw::PreferencesGroup::builder().title(gettext("Account")).build();
-    let account_row = adw::ActionRow::builder().title(gettext("Signed in")).use_markup(false).build();
-    account_row.add_prefix(&gtk::Image::from_icon_name("avatar-default-symbolic"));
-    let sign_out = gtk::Button::builder()
-        .label(gettext("Sign out"))
-        .valign(gtk::Align::Center)
-        .css_classes(["destructive-action"])
-        .build();
-    account_row.add_suffix(&sign_out);
-    account_group.add(&account_row);
-    main_page.add(&account_group);
-
-    let apps_group = adw::PreferencesGroup::builder()
-        .title(gettext("Proton apps"))
-        .description(gettext("Each app uses this sign-in. Where an app isn't signed in yet, Sign in gives it this one."))
-        .build();
-    let mut apps = Vec::new();
-    for (id, icon) in APPS {
-        let row = adw::ActionRow::builder().title(app_name(id)).use_markup(false).build();
-        row.add_prefix(&gtk::Image::from_icon_name(icon));
-        let app_spinner = gtk::Spinner::builder().visible(false).build();
-        let app_sign_in = gtk::Button::builder().label(gettext("Sign in")).valign(gtk::Align::Center).css_classes(["pill"]).visible(false).build();
-        row.add_suffix(&app_spinner);
-        row.add_suffix(&app_sign_in);
-        apps_group.add(&row);
-        apps.push(AppRow { id, row, spinner: app_spinner, sign_in: app_sign_in });
-    }
-    main_page.add(&apps_group);
-    stack.add_named(&main_page, Some("main"));
-
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.append(&banner);
-    content.append(&stack);
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
-    toolbar.set_content(Some(&content));
+    toolbar.set_content(Some(&stack));
     window.set_content(Some(&toolbar));
-
-    let ui = Rc::new(AccountWindow {
-        window: window.clone(),
-        banner,
-        stack,
-        credentials,
-        username,
-        password,
-        sign_in_group,
-        sign_in,
-        spinner,
-        two_factor,
-        code,
-        mailbox,
-        mailbox_password,
-        account_row,
-        sign_out,
-        apps,
-        busy: Cell::new(false),
-        shown: Cell::new(None),
+    ACCOUNT_WINDOWS.with(|slots| {
+        let mut slots = slots.borrow_mut();
+        slots.retain(|(_, w)| w.upgrade().is_some());
+        slots.push((service, window.downgrade()));
     });
-    {
-        let u = ui.clone();
-        ui.sign_in.connect_clicked(move |_| u.start_sign_in());
-        let u = ui.clone();
-        ui.password.connect_entry_activated(move |_| u.start_sign_in());
-        let u = ui.clone();
-        ui.username.connect_entry_activated(move |_| {
-            u.password.grab_focus();
-        });
-        let u = ui.clone();
-        ui.code.connect_apply(move |_| u.submit_code());
-        let u = ui.clone();
-        ui.code.connect_entry_activated(move |_| u.submit_code());
-        let u = ui.clone();
-        ui.mailbox_password.connect_apply(move |_| u.submit_mailbox());
-        let u = ui.clone();
-        ui.mailbox_password.connect_entry_activated(move |_| u.submit_mailbox());
-        let u = ui.clone();
-        ui.sign_out.connect_clicked(move |_| u.confirm_sign_out());
-        for app in &ui.apps {
-            let id = app.id;
-            app.sign_in.connect_clicked(move |_| crate::proton_session::share_with(id));
-        }
-    }
-    // Closing with a half-finished sign-in ends its session at Proton.
-    window.connect_close_request(|_| {
-        run(native::cancel_sign_in, |()| {});
-        glib::Propagation::Proceed
-    });
-    window.connect_destroy(|_| ACCOUNT_WINDOW.with(|slot| *slot.borrow_mut() = None));
-    ui.show_page();
-    ui.refresh_apps();
-    ui.probe_apps();
-    {
-        let weak = Rc::downgrade(&ui);
-        let window_weak = window.downgrade();
-        glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
-            let (Some(ui), Some(window)) = (weak.upgrade(), window_weak.upgrade()) else {
-                return glib::ControlFlow::Break;
-            };
-            if !window.is_visible() {
-                return glib::ControlFlow::Break;
-            }
-            ui.tick();
-            glib::ControlFlow::Continue
-        });
-    }
-    ACCOUNT_WINDOW.with(|slot| *slot.borrow_mut() = Some(window.downgrade()));
     window.present();
 }
 
-/// One Proton app's row in the account window.
-struct AppRow {
-    id: &'static str,
-    row: adw::ActionRow,
-    spinner: gtk::Spinner,
-    sign_in: gtk::Button,
+/// The sign-in side of a Proton Calendar or Drive settings page. Make it
+/// first (`add_account_group`): it becomes the page's Account group. Then
+/// `wrap` the finished page: signed out, the page shows only the sign-in;
+/// signed in, the page with the Account group on top.
+pub struct SettingsSignIn {
+    service: native::Service,
+    account: Rc<login::Account>,
+    login: login::LoginPage,
 }
 
-/// What an app's row says about its Proton sign-in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AppLine {
-    NotInstalled,
-    NotInBuild,
-    SigningIn,
-    SignedIn,
-    /// Not signed in; `share` when the Proton sign-in can be given to it now.
-    SignedOut { share: bool },
-    /// Not known yet (Proton Pass is still looking at its session).
-    Checking,
-}
-
-impl AppLine {
-    fn text(self) -> String {
-        match self {
-            AppLine::NotInstalled => gettext("Not installed"),
-            AppLine::NotInBuild => gettext("Not included in this Spotty build"),
-            AppLine::SigningIn => gettext("Signing in…"),
-            AppLine::SignedIn => gettext("Signed in"),
-            AppLine::SignedOut { .. } => gettext("Not signed in"),
-            AppLine::Checking => gettext("Checking…"),
-        }
-    }
-}
-
-/// Decide an app's row from what Spotty knows. `signed_in` is None while the
-/// app has not reported yet; `can_share` says the Proton sign-in can be handed
-/// over right now.
-fn app_line(installed: bool, built: bool, signing_in: bool, signed_in: Option<bool>, can_share: bool) -> AppLine {
-    if !installed {
-        return AppLine::NotInstalled;
-    }
-    if !built {
-        return AppLine::NotInBuild;
-    }
-    if signing_in {
-        return AppLine::SigningIn;
-    }
-    match signed_in {
-        Some(true) => AppLine::SignedIn,
-        Some(false) => AppLine::SignedOut { share: can_share },
-        None => AppLine::Checking,
-    }
-}
-
-struct AccountWindow {
-    window: adw::ApplicationWindow,
-    banner: adw::Banner,
-    stack: gtk::Stack,
-    credentials: adw::PreferencesGroup,
-    username: adw::EntryRow,
-    password: adw::PasswordEntryRow,
-    sign_in_group: adw::PreferencesGroup,
-    sign_in: gtk::Button,
-    spinner: gtk::Spinner,
-    two_factor: adw::PreferencesGroup,
-    code: adw::EntryRow,
-    mailbox: adw::PreferencesGroup,
-    mailbox_password: adw::PasswordEntryRow,
-    account_row: adw::ActionRow,
-    sign_out: gtk::Button,
-    apps: Vec<AppRow>,
-    busy: Cell<bool>,
-    /// Which page is showing: Some(true) signed in, Some(false) signing in.
-    shown: Cell<Option<bool>>,
-}
-
-impl AccountWindow {
-    /// Follow changes made elsewhere: a sign-in or sign-out, and each app's state.
-    fn tick(&self) {
-        if self.shown.get() != Some(native::signed_in()) {
-            self.show_page();
-        }
-        self.refresh_apps();
-    }
-
-    /// Show the signed-in page or the sign-in form, whichever the session calls for.
-    fn show_page(&self) {
-        let signed_in = native::signed_in();
-        self.shown.set(Some(signed_in));
-        self.stack.set_visible_child_name(if signed_in { "main" } else { "signin" });
-        if signed_in {
-            self.account_row.set_subtitle(&native::account_label());
-        }
-    }
-
-    /// Back to the empty sign-in form.
-    fn reset_form(&self) {
-        self.credentials.set_visible(true);
-        self.sign_in_group.set_visible(true);
-        self.two_factor.set_visible(false);
-        self.mailbox.set_visible(false);
-        self.code.set_text("");
-        self.password.set_text("");
-        self.mailbox_password.set_text("");
-        self.banner.set_revealed(false);
-    }
-
-    fn refresh_apps(&self) {
-        let native_in = native::signed_in();
-        for app in &self.apps {
-            let signed_in = match app.id {
-                // Proton Pass hasn't looked yet: don't claim it is signed out.
-                "proton-pass" if matches!(crate::proton_pass::state(), crate::proton_pass::State::Idle) => None,
-                _ => Some(crate::proton_session::app_signed_in(app.id)),
-            };
-            let shares = matches!(app.id, "proton-pass" | "proton-vpn");
-            let line = app_line(
-                installed(app.id),
-                built(app.id),
-                crate::proton_session::signing_in(app.id),
-                signed_in,
-                shares && native_in,
-            );
-            app.row.set_subtitle(&line.text());
-            let signing = line == AppLine::SigningIn;
-            app.spinner.set_visible(signing);
-            app.spinner.set_spinning(signing);
-            app.sign_in.set_visible(matches!(line, AppLine::SignedOut { share: true }));
-        }
-    }
-
-    /// Ask the apps for their state now, so the rows are right before the first tick.
-    fn probe_apps(&self) {
-        if installed("proton-vpn") && crate::proton_vpn::available() {
-            run(
-                || {
-                    let _ = crate::proton_vpn::status();
-                },
-                |()| {},
-            );
-        }
-        if installed("proton-pass") && crate::proton_pass::available() && matches!(crate::proton_pass::state(), crate::proton_pass::State::Idle) {
-            crate::proton_pass::check_session();
-        }
-    }
-
-    fn set_busy(&self, busy: bool) {
-        self.busy.set(busy);
-        self.sign_in.set_sensitive(!busy);
-        self.code.set_sensitive(!busy);
-        self.mailbox_password.set_sensitive(!busy);
-        self.sign_out.set_sensitive(!busy);
-        self.spinner.set_visible(busy);
-        self.spinner.set_spinning(busy);
-    }
-
-    fn error(&self, message: &str) {
-        self.banner.set_title(message);
-        self.banner.set_revealed(true);
-    }
-
-    fn start_sign_in(self: &Rc<Self>) {
-        if self.busy.get() {
-            return;
-        }
-        let user = self.username.text().to_string();
-        let secret = spotty_proton_account::Zeroizing::new(self.password.text().to_string());
-        // The field is emptied right away; only the proof leaves this process.
-        self.password.set_text("");
-        self.banner.set_revealed(false);
-        self.set_busy(true);
-        let ui = self.clone();
-        run(move || native::sign_in(&user, &secret), move |outcome| ui.after(outcome));
-    }
-
-    fn submit_code(self: &Rc<Self>) {
-        if self.busy.get() {
-            return;
-        }
-        let code = self.code.text().to_string();
-        self.banner.set_revealed(false);
-        self.set_busy(true);
-        let ui = self.clone();
-        run(move || native::submit_two_factor(&code), move |outcome| ui.after(outcome));
-    }
-
-    fn submit_mailbox(self: &Rc<Self>) {
-        if self.busy.get() {
-            return;
-        }
-        let secret = spotty_proton_account::Zeroizing::new(self.mailbox_password.text().to_string());
-        self.mailbox_password.set_text("");
-        self.banner.set_revealed(false);
-        self.set_busy(true);
-        let ui = self.clone();
-        run(move || native::submit_mailbox_password(&secret), move |outcome| ui.after(outcome));
-    }
-
-    fn after(self: &Rc<Self>, outcome: native::Outcome) {
-        self.set_busy(false);
-        match outcome {
-            native::Outcome::Done => {
-                self.username.set_text("");
-                self.reset_form();
-                self.show_page();
-                self.refresh_apps();
-                // Proton Pass and Proton VPN take the new sign-in too.
-                crate::proton_session::share_sign_in();
-                crate::app::refresh_search_window();
-            }
-            native::Outcome::TwoFactor => {
-                self.credentials.set_visible(false);
-                self.sign_in_group.set_visible(false);
-                self.two_factor.set_visible(true);
-                self.code.set_text("");
-                self.code.grab_focus();
-            }
-            native::Outcome::MailboxPassword => {
-                self.credentials.set_visible(false);
-                self.sign_in_group.set_visible(false);
-                self.two_factor.set_visible(false);
-                self.mailbox.set_visible(true);
-                self.mailbox_password.grab_focus();
-            }
-            native::Outcome::Failed(message) => self.error(&message),
-        }
-    }
-
-    fn confirm_sign_out(self: &Rc<Self>) {
-        let dialog = adw::AlertDialog::builder()
-            .heading(gettext("Sign out of Proton everywhere in Spotty?"))
-            .body(gettext("Spotty signs out of your Proton account, Proton Pass and Proton VPN, and deletes the saved sign-ins and everything decrypted from them. Your Proton accounts and data are not affected."))
-            .build();
-        dialog.add_response("cancel", &gettext("Cancel"));
-        dialog.add_response("signout", &gettext("Sign out"));
-        dialog.set_response_appearance("signout", adw::ResponseAppearance::Destructive);
-        dialog.set_default_response(Some("cancel"));
-        dialog.set_close_response("cancel");
-        let ui = self.clone();
-        dialog.connect_response(Some("signout"), move |_, _| ui.sign_out_everywhere());
-        dialog.present(Some(&self.window));
-    }
-
-    fn sign_out_everywhere(self: &Rc<Self>) {
-        self.set_busy(true);
-        self.banner.set_revealed(false);
-        let ui = self.clone();
-        run(
-            || {
-                // Proton VPN and Proton Pass first: they can only sign out while
-                // their sessions still work.
-                crate::proton_pass::sign_out();
-                if crate::proton_vpn::available() && crate::proton_vpn::status().is_ok_and(|s| s.logged_in) {
-                    if let Err(error) = crate::proton_vpn::logout() {
-                        log::warn!("proton vpn: sign-out failed: {error}");
-                    }
-                }
-                native::sign_out();
-            },
-            move |()| {
-                // Older Spotty versions kept a private web profile for a
-                // Proton web window that no longer exists; erase what is left.
-                for dir in [dirs::data_dir(), dirs::cache_dir()].into_iter().flatten() {
-                    let _ = std::fs::remove_dir_all(dir.join("spotty").join("proton-web"));
-                }
-                ui.set_busy(false);
-                ui.reset_form();
-                ui.show_page();
-                ui.refresh_apps();
-                crate::app::refresh_search_window();
-            },
-        );
-    }
-}
-
-/// The Proton account group of a Proton app's settings page: a signed-in row
-/// with a way to manage the account, or a row that opens the account window.
-pub fn add_account_row(page: &adw::PreferencesPage) {
-    let group = adw::PreferencesGroup::builder().title(gettext("Proton account")).build();
-    let signed_in_row = adw::ActionRow::builder().title(gettext("Signed in")).use_markup(false).build();
-    signed_in_row.add_prefix(&gtk::Image::from_icon_name("avatar-default-symbolic"));
-    let manage = gtk::Button::builder().label(gettext("Manage…")).valign(gtk::Align::Center).build();
-    signed_in_row.add_suffix(&manage);
-    let signed_out_row = adw::ActionRow::builder()
-        .title(gettext("Sign in to Proton"))
-        .subtitle(gettext("One sign-in for all Proton apps in Spotty"))
-        .use_markup(false)
-        .activatable(true)
-        .build();
-    signed_out_row.add_prefix(&gtk::Image::from_icon_name("avatar-default-symbolic"));
-    signed_out_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
-    group.add(&signed_in_row);
-    group.add(&signed_out_row);
-    page.add(&group);
-
-    let manage_page = page.downgrade();
-    manage.connect_clicked(move |_| open_account_window(window_of(&manage_page).as_ref()));
-    let sign_in_page = page.downgrade();
-    signed_out_row.connect_activated(move |_| open_account_window(window_of(&sign_in_page).as_ref()));
-
-    // Follow a sign-in or sign-out made anywhere else while this page is open.
-    let update = {
-        let (signed_in_row, signed_out_row) = (signed_in_row.clone(), signed_out_row.clone());
-        move || {
-            let signed_in = native::signed_in();
-            signed_in_row.set_visible(signed_in);
-            signed_out_row.set_visible(!signed_in);
-            if signed_in {
-                let label = native::account_label();
-                if signed_in_row.subtitle().as_deref() != Some(label.as_str()) {
-                    signed_in_row.set_subtitle(&label);
-                }
-            }
-        }
+pub fn add_account_group(page: &adw::PreferencesPage, service: native::Service) -> SettingsSignIn {
+    let account = account_group(service);
+    page.add(&account.group);
+    let login = {
+        let account = account.clone();
+        login_page(service, move || {
+            refresh_email(&account, service);
+            crate::app::refresh_search_window();
+        })
     };
-    update();
-    let weak_page = page.downgrade();
-    glib::timeout_add_seconds_local(1, move || {
-        if weak_page.upgrade().is_none() {
-            return glib::ControlFlow::Break;
-        }
-        update();
-        glib::ControlFlow::Continue
-    });
+    SettingsSignIn { service, account, login }
 }
 
-/// The window a widget sits in, if it is in one.
-fn window_of(page: &glib::WeakRef<adw::PreferencesPage>) -> Option<gtk::Window> {
-    let page = page.upgrade()?;
-    page.root().and_then(|root| root.downcast::<gtk::Window>().ok())
+impl SettingsSignIn {
+    /// The widget for the settings popup: the finished `page`, or the sign-in
+    /// page while signed out. Closing the popup ends a half-finished sign-in
+    /// (call `reset` on the returned page's login, see `close`).
+    pub fn wrap(&self, page: &adw::PreferencesPage) -> gtk::Widget {
+        let (account, service) = (self.account.clone(), self.service);
+        login::sign_in_stack(&self.login, page, move || {
+            refresh_email(&account, service);
+            session_of(service)
+        })
+        .upcast()
+    }
+
+    /// Wipe the sign-in page and end a sign-in half done. Call it when the
+    /// popup closes.
+    pub fn close(&self) {
+        self.login.reset();
+    }
 }
 
 // ── Shared window pieces ────────────────────────────────────────────────────
@@ -652,42 +291,28 @@ fn spinner_page(title: &str) -> adw::StatusPage {
     adw::StatusPage::builder().title(title).child(&spinner).build()
 }
 
-fn signed_out_page(service: &str, parent: gtk::Window) -> adw::StatusPage {
-    let page = status_page(
-        "avatar-default-symbolic",
-        &gettext("Sign in to Proton"),
-        &gettext("Sign in once with your Proton account. It takes your Proton email and password, and a two-factor code if you use one."),
-    );
-    let button = gtk::Button::builder().label(gettext("Sign in…")).css_classes(["suggested-action", "pill"]).halign(gtk::Align::Center).build();
-    let service = service.to_owned();
-    button.connect_clicked(move |_| open_settings(Some(&parent), &service));
-    page.set_child(Some(&button));
-    page
-}
-
 /// Keep a window (account, Drive, agenda) clickable. GTK blocks input to every
 /// window in a modal window's group while that modal window is visible, and all
 /// of Spotty's windows share one group by default: opened from the modal Proton
-/// settings popup, the account window or the search window, such a window
+/// settings popup, a sign-in window or the search window, such a window
 /// couldn't even be closed. Its own group takes it out of their reach.
-fn own_window(window: &adw::ApplicationWindow, parent: Option<&gtk::Window>) {
+pub(crate) fn own_window(window: &adw::ApplicationWindow, parent: Option<&gtk::Window>) {
     if let Some(parent) = parent.filter(|p| p.is_visible()) {
         window.set_transient_for(Some(parent));
     }
     gtk::WindowGroup::new().add_window(window);
 }
 
-/// While a window shows its signed-out page, move on as soon as Spotty is
-/// signed in to Proton (from any window), so every Proton window follows the
-/// one sign-in.
-fn follow_sign_in(window: &adw::ApplicationWindow, stack: &gtk::Stack, signed_in: impl Fn() + 'static) {
+/// While a window shows its signed-out page, move on as soon as its own app is
+/// signed in (from any window), so every window for that app follows the sign-in.
+fn follow_sign_in(window: &adw::ApplicationWindow, stack: &gtk::Stack, service: native::Service, signed_in: impl Fn() + 'static) {
     let window = window.downgrade();
     let stack = stack.downgrade();
     glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
         let (Some(_window), Some(stack)) = (window.upgrade(), stack.upgrade()) else {
             return glib::ControlFlow::Break;
         };
-        if stack.visible_child_name().as_deref() == Some("signedout") && native::signed_in() {
+        if stack.visible_child_name().as_deref() == Some("signedout") && native::signed_in(service) {
             signed_in();
         }
         glib::ControlFlow::Continue
@@ -756,7 +381,15 @@ pub fn open_drive(parent: Option<&gtk::Window>, folder_id: &str) {
     let retry = gtk::Button::builder().label(gettext("Try again")).css_classes(["pill"]).halign(gtk::Align::Center).build();
     error.set_child(Some(&retry));
     stack.add_named(&error, Some("error"));
-    stack.add_named(&signed_out_page("proton-drive", window.clone().upcast()), Some("signedout"));
+    let drive_login = login_page(native::Service::Drive, || crate::app::refresh_search_window());
+    stack.add_named(&drive_login.widget(), Some("signedout"));
+    {
+        let login = drive_login.clone();
+        window.connect_close_request(move |_| {
+            login.reset();
+            glib::Propagation::Proceed
+        });
+    }
 
     let toasts = adw::ToastOverlay::new();
     toasts.set_child(Some(&stack));
@@ -790,7 +423,7 @@ pub fn open_drive(parent: Option<&gtk::Window>, folder_id: &str) {
     {
         let weak = Rc::downgrade(&drive);
         let folder_id = folder_id.to_owned();
-        follow_sign_in(&window, &drive.stack, move || {
+        follow_sign_in(&window, &drive.stack, native::Service::Drive, move || {
             if let Some(d) = weak.upgrade() {
                 d.start(folder_id.clone());
             }
@@ -807,7 +440,7 @@ impl DriveWindow {
 
     /// Work out the folder chain for `folder_id` and show it.
     fn start(self: &Rc<Self>, folder_id: String) {
-        if !native::signed_in() {
+        if !native::signed_in(native::Service::Drive) {
             self.stack.set_visible_child_name("signedout");
             return;
         }
@@ -882,7 +515,7 @@ impl DriveWindow {
             match result {
                 Ok(children) => d.show(children),
                 Err(error) => {
-                    if !native::signed_in() {
+                    if !native::signed_in(native::Service::Drive) {
                         d.stack.set_visible_child_name("signedout");
                     } else {
                         d.fail(&error);
@@ -1027,7 +660,15 @@ pub fn open_agenda(parent: Option<&gtk::Window>, date: &str) {
     let retry = gtk::Button::builder().label(gettext("Try again")).css_classes(["pill"]).halign(gtk::Align::Center).build();
     error.set_child(Some(&retry));
     stack.add_named(&error, Some("error"));
-    stack.add_named(&signed_out_page("proton-calendar", window.clone().upcast()), Some("signedout"));
+    let agenda_login = login_page(native::Service::Calendar, || crate::app::refresh_search_window());
+    stack.add_named(&agenda_login.widget(), Some("signedout"));
+    {
+        let login = agenda_login.clone();
+        window.connect_close_request(move |_| {
+            login.reset();
+            glib::Propagation::Proceed
+        });
+    }
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&stack));
@@ -1069,7 +710,7 @@ pub fn open_agenda(parent: Option<&gtk::Window>, date: &str) {
     }
     {
         let weak = Rc::downgrade(&agenda);
-        follow_sign_in(&window, &agenda.stack, move || {
+        follow_sign_in(&window, &agenda.stack, native::Service::Calendar, move || {
             if let Some(a) = weak.upgrade() {
                 a.reload();
             }
@@ -1156,7 +797,7 @@ impl AgendaWindow {
     }
 
     fn reload(self: &Rc<Self>) {
-        if !native::signed_in() {
+        if !native::signed_in(native::Service::Calendar) {
             self.stack.set_visible_child_name("signedout");
             return;
         }
@@ -1175,7 +816,7 @@ impl AgendaWindow {
             match result {
                 Ok(events) => a.show(&view, &start, &end, events),
                 Err(error) => {
-                    if !native::signed_in() {
+                    if !native::signed_in(native::Service::Calendar) {
                         a.stack.set_visible_child_name("signedout");
                     } else {
                         a.error.set_description(Some(&error));
@@ -1290,6 +931,20 @@ impl AgendaWindow {
 mod tests {
     use super::*;
 
+    #[test]
+    fn proton_native_outcomes_map_onto_the_shared_sign_in_steps() {
+        assert_eq!(native_step(native::Outcome::Done), login::Step::Done);
+        assert_eq!(native_step(native::Outcome::TwoFactor), login::Step::TwoFactor);
+        assert_eq!(native_step(native::Outcome::Failed("no".into())), login::Step::Failed("no".into()));
+        match native_step(native::Outcome::MailboxPassword) {
+            login::Step::SecondPassword { title, label } => {
+                assert!(title.contains("Mailbox"));
+                assert!(label.contains("Mailbox"));
+            }
+            other => panic!("the mailbox step is a second password, got {other:?}"),
+        }
+    }
+
     fn at(y: i32, m: i32, d: i32) -> glib::DateTime {
         glib::DateTime::from_local(y, m, d, 15, 30, 0.0).unwrap()
     }
@@ -1320,22 +975,5 @@ mod tests {
         assert!(valid_color("#8080ff"));
         assert!(!valid_color("red\"><b>"));
         assert!(!valid_color("#12345"));
-    }
-
-    #[test]
-    fn proton_app_rows_follow_install_build_and_sign_in() {
-        // Not installed wins over everything else.
-        assert_eq!(app_line(false, true, false, Some(true), true), AppLine::NotInstalled);
-        assert_eq!(app_line(false, false, true, None, true), AppLine::NotInstalled);
-        // Installed but not in this build.
-        assert_eq!(app_line(true, false, false, Some(true), true), AppLine::NotInBuild);
-        // A sign-in in progress shows before the signed-in state.
-        assert_eq!(app_line(true, true, true, Some(false), true), AppLine::SigningIn);
-        assert_eq!(app_line(true, true, false, Some(true), true), AppLine::SignedIn);
-        assert_eq!(app_line(true, true, false, Some(false), true), AppLine::SignedOut { share: true });
-        // Signed out of the Proton account: nothing to hand over.
-        assert_eq!(app_line(true, true, false, Some(false), false), AppLine::SignedOut { share: false });
-        // Not reported yet.
-        assert_eq!(app_line(true, true, false, None, true), AppLine::Checking);
     }
 }

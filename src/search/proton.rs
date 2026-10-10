@@ -234,7 +234,7 @@ fn browser_row(title: String, subtitle: String, icon: &str, url: String, score: 
 
 fn sign_in_row(service: &str, icon: &str, score: i32) -> SearchResult {
     let title = if service == "proton-drive" { gettext("Sign in to Proton Drive") } else { gettext("Sign in to Proton Calendar") };
-    native_row(title, gettext("One sign-in for all Proton apps in Spotty"), icon, "settings", service, score)
+    native_row(title, gettext("Its own sign-in; other Proton apps are not affected"), icon, "settings", service, score)
 }
 
 /// What Spotty knows about the calendar right now.
@@ -308,7 +308,7 @@ fn event_row(event: &Event, now: &glib::DateTime, score: i32) -> SearchResult {
 
 /// The cached view of the calendar around `[from, to)`.
 fn calendar_snapshot(from: i64, to: i64) -> CalendarView {
-    if !proton_native::signed_in() {
+    if !proton_native::signed_in(proton_native::Service::Calendar) {
         return CalendarView::SignedOut;
     }
     let now = glib::DateTime::now_local().ok();
@@ -493,7 +493,7 @@ pub enum DriveView {
 }
 
 pub fn drive_search(query: &str, config: &Config) -> Vec<SearchResult> {
-    let view = if !proton_native::signed_in() {
+    let view = if !proton_native::signed_in(proton_native::Service::Drive) {
         DriveView::SignedOut
     } else {
         proton_native::drive_ensure_index();

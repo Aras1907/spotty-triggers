@@ -51,28 +51,46 @@ src/search/             Search dispatch and result providers.
                         for result types, and web/shell manifest handling.
   proton.rs             VPN, Calendar and Drive search rows, and the synced-folder
                         search for Drive.
-  pass.rs               Proton Pass search rows (item titles only).
+  pass.rs               Proton Pass search rows: titles, vault names and item kinds
+                        (usernames and web addresses aren't in the listing).
   calculator.rs, convert.rs, web.rs, apps.rs, ...   Other providers.
 src/features/           Feature services.
   proton_native.rs      Spotty's Proton sign-in state and saved session
-                        (session.json), Drive and Calendar calls (blocking; run
-                        off the GTK thread).
-  proton_session.rs     The one Proton sign-in: after-install hook, sharing it
-                        with Pass and VPN, and the VPN fork hand-off.
+                        (session.json; the key password in the keyring), Drive and
+                        Calendar calls (blocking; run off the GTK thread).
+  proton_session.rs     Which Proton apps are signed in or signing in (the
+                        "signing in" marker the UI shows). No sharing.
+  proton_pass_login.rs  Proton Pass's own sign-in: `pass-cli login --interactive`
+                        on a pseudo-terminal; the password, 2FA code and mailbox
+                        password are typed into it.
+  proton_pass_sequence.rs  The copy-all plan (which values, in what order, when a
+                        paste counts). Pure, unit-tested; the clipboard side is
+                        `ui/proton_pass_paste.rs`.
+  proton_pass_item.rs   Parses `pass-cli item view --output json` into the fields
+                        the vault window shows (pure functions, unit-tested).
+  proton_pass_settings.rs  Pass preferences in `pass-settings.json` (clipboard
+                        delay, usernames, default vault, title search).
   proton_pass_pin.rs    The optional PIN in front of Proton Pass: salted
                         PBKDF2 hash, timed unlock, the prompt and its settings.
-  proton_pass.rs        Drives the embedded pass-cli child process, including
-                        its sign-in approval.
+  proton_pass.rs        Drives the embedded pass-cli child process: listings,
+                        field reads, TOTP, copies, sign-out.
   proton_bridge.rs      Whether Mail Bridge is supported on this platform.
   clipboard.rs, fileops.rs, ocr.rs, packagekit.rs, ...   Other services.
 src/ui/                 Shared UI pieces that Spotty also compiles.
-  proton_native_ui.rs   The Proton account window, the sign-in row of the
-                        Calendar and Drive settings, the Drive browser and the
-                        Calendar agenda.
+  proton_native_ui.rs   The Calendar and Drive sign-in windows (one per app), their
+                        settings wrap, the Drive browser and the Calendar agenda.
+                        Its sign-in is the shared page (below).
+  proton_pass_ui.rs     The Proton Pass vault window (view and copy only), Pass's
+                        sign-in backend for the shared page, and the Pass settings
+                        groups.
   feature_settings.rs   Feature settings dialogs (included in settings_window).
 src/security.rs         Private storage helpers and bounded HTTP downloads.
-proton-account/         Rust crate: Proton API client, sign-in and session forks
-                        (see Proton stack).
+proton-account/         Rust crate: Proton API client and sign-in for Calendar and
+                        Drive (see Proton stack), and the keyring store for the key
+                        passwords (`secrets.rs`).
+proton-login/           Rust crate `spotty-proton-login`: the one sign-in page every
+                        Proton app shows (GTK/libadwaita), and its `Backend` trait.
+                        Used by Spotty and by `proton-bridge-gui`.
 proton-pass-embedded/   build.rs + prepare_bundle.py + sources.json +
                         pass-cli.Cargo.lock: builds Proton's pass-cli.
 proton-vpn-embedded/    build.rs + prepare_bundle.py + sources.json +
@@ -90,14 +108,14 @@ Spotty-side files (**Spotty checkout**, local only):
   `proton-vpn` and `proton-pass`.
 - `src/main.rs`: `#[path]` includes of the repo's modules (about lines 26-77),
   `mod proton_vpn;`, daemon start, the PID file and `--toggle`/`--quit` handling.
-- `src/ui/mod.rs`: `#[path]` include of `proton_native_ui.rs`.
+- `src/ui/mod.rs`: `#[path]` includes of `proton_native_ui.rs`, `proton_pass_ui.rs`,
+  `proton_pass_preview.rs` and `proton_pass_paste.rs`.
   `src/ui/settings_window.rs`: `#[path]` include of `feature_settings.rs`; it also
   builds the Proton VPN window (with its "Your Proton account" section), the
   Proton Pass settings and the Calendar and Drive settings.
 - `src/ui/search_window.rs`: the `match` on `Action` that runs each action
   (Proton arms around lines 6360-6380).
-- `src/proton_vpn.rs`: Spotty's client for the VPN helper (JSON lines), including
-  `import_fork`.
+- `src/proton_vpn.rs`: Spotty's client for the VPN helper (JSON lines).
 - `src/triggers.rs`: `RepoTrigger`, `TriggerAction` and `is_service()`.
 - `src/app.rs`: daemon, SIGUSR1 handler, keybinding registration.
 
@@ -136,15 +154,45 @@ needs a Rust provider in this repo and a rebuild of Spotty.
 
 ## The Proton stack
 
-Four Proton integrations share one sign-in. Calendar and Drive use it directly.
-Pass and VPN each get a session forked from it.
+Every Proton app in Spotty has a sign-in of its own, with its own session. No
+session is forked, copied or shared, and no password is reused for another app.
+Signing out of one app never touches another.
 
 | Integration | Trigger | Sign-in | Runs |
 |---|---|---|---|
-| Calendar, Drive | `cal`, `drive` | The shared sign-in, used directly. SRP sign-in in Spotty's Proton account window | `proton-account` crate, in process |
-| Pass | `pass` | The shared sign-in. Spotty forks a `cli-pass` child session and approves the link that `pass-cli login` prints | `pass-cli` child process |
-| VPN | `vpn` | The shared sign-in. Spotty forks a `linux-vpn-gui` child session that the helper imports. VPN's own username and password form is the fallback | Python helper process (JSON lines) |
-| Mail Bridge | none (service) | Bridge's own window | Bridge engine (`proton-bridge-gui`) |
+| Calendar | `cal` | Its own SRP sign-in, on the shared sign-in page, in the Proton Calendar sign-in window or settings | `proton-account` crate, in process |
+| Drive | `drive` | Its own SRP sign-in, on the shared sign-in page, in the Proton Drive sign-in window or settings | `proton-account` crate, in process |
+| Pass | `pass` | Its own password sign-in on the shared sign-in page (settings and vault window): `pass-cli login --interactive`, answered on a pseudo-terminal | `pass-cli` child process |
+| VPN | `vpn` | Its own username and password sign-in on the shared sign-in page (two-factor included) | Python helper process (JSON lines) |
+| Mail Bridge | none (service) | Its own sign-in on the shared sign-in page in Bridge's window, driving Bridge's login stream | Bridge engine (`proton-bridge-gui`) |
+
+### The shared sign-in page (`proton-login/`)
+
+Every Proton app shows the same page, `spotty_proton_login::LoginPage`, built
+from one libadwaita layout: the app's icon and "Sign in to Proton <App>", then
+a boxed list with "Email or username" and "Password", a **Sign in** pill (with a
+spinner while busy) and a "Create a free Proton account" link. Errors go to one
+banner. Proton can ask for more: the same page then swaps in a "Two-factor code"
+step, or a second-password step (mailbox password, or Pass's extra password), each
+with Back and Continue. Enter submits a step. Back cancels the sign-in at the
+backend and wipes the fields. Closing the window does the same.
+
+An app plugs its own sign-in in through the `Backend` trait: `begin(email,
+password) -> Step`, `submit_code`, `submit_second`, `cancel`, with `Step` =
+`Done | TwoFactor | SecondPassword{title, label} | Failed(message)`. Each call
+blocks, so the page runs it with `gio::spawn_blocking`. The backend of each app is
+in its own module: `proton_native_ui.rs` (Calendar, Drive), `proton_pass_ui.rs`
+(Pass), `settings_window.rs` (`VpnLogin`, VPN) and `proton-bridge-gui/src/gui.rs`
+(`BridgeLogin`, through `BridgeLink`, which passes Bridge's login stream answers to
+the waiting call).
+
+`sign_in_stack(login, page, session)` shows the page while signed out, the app's
+settings once signed in, and a "checking" page until the saved session has loaded.
+Signed in, the settings start with an **Account** group: the email and **Sign out**
+(a confirmation `adw::AlertDialog`). Signing out returns to the sign-in page. Mail
+Bridge does not use this stack: its window keeps Bridge's own accounts list (each
+account with Settings and Sign out) and shows the sign-in page while no account is
+connected.
 
 ### proton-account crate (`proton-account/src/`)
 
@@ -161,100 +209,106 @@ Pass and VPN each get a session forked from it.
 - `drive.rs`: list folders, decrypt names, download and decrypt files (block
   hashes checked). `safe_file_name`.
 - `calendar.rs`, `ical.rs`: calendars, events, repeating events.
-- `fork.rs`: session forks for Proton's other official clients (see below).
 - `pgp.rs`: the OpenPGP operations used (Proton's `proton-crypto`, rustpgp).
 - `error.rs`: error type, including `is_signed_out()`.
 - `tests/fake_proton.rs`: a local fake Proton server with real SRP, real keys
   and real ciphertext. It covers sign-in, two-factor, key chain, Drive names and
-  downloads, Calendar events, and the VPN and Pass forks (including a refused
-  fork for another app). It cannot prove that Proton's live service behaves the
-  same.
+  downloads, and Calendar events. It cannot prove that Proton's live service
+  behaves the same.
 
-### Session fork (shared sign-in with Pass and VPN)
+### Native state and windows (Calendar and Drive)
 
-Proton lets one session create a child session for another of Proton's clients.
-Spotty asks for that child (`POST auth/v4/sessions/forks`) and hands it to the
-other app. No login password is shared.
-
-- Whitelist: `ALLOWED_CHILDREN` in `fork.rs` allows exactly `cli-pass`
-  (`PASS_CLIENT_ID`, Proton Pass CLI) and `linux-vpn-gui` (`VPN_CLIENT_ID`,
-  Proton VPN). `fork_session` refuses any other id before it sends a request.
-  Adding a client needs a code change, a test and a review.
-- `Independent: 0` ties the child to Spotty's session, so signing that session
-  out should revoke the child too. The code relies on this; it is not tested
-  live.
-- `fork_for_vpn()` returns a selector for VPN. It is called by
-  `proton_session::hand_to_vpn`. The VPN helper's `import_fork` command takes the
-  selector and the account email over stdin and exchanges the selector for a
-  session. The selector is never logged or saved.
-- `approve_pass_login(&PassLogin)` approves a `pass-cli login` link. It is called
-  by `proton_pass::sign_in`. Only the exact shape
-  `https://account.proton.me/desktop/login?app=pass#payload=...` is accepted
-  (`parse_pass_login_url`). The key password goes to Proton only inside an
-  AES-256-GCM payload, keyed with the one-time login key from that link
-  (`pass_fork_payload`). Spotty sends the user code, the client id and that
-  payload. It never sends the login key.
-- Callers: `grep -rn "fork_for_vpn\|approve_pass_login\|import_fork" --include=*.rs --include=*.py .`
-- Status: both forks are wired into the app. VPN starts from the account
-  window's Sign in button, the VPN window's account button, a native sign-in
-  (`share_sign_in`) and installing VPN while signed in (`after_install`). Pass
-  starts from the Pass settings' sign-in row, the `pass` "Sign in" row, the
-  account window's Sign in button, a native sign-in and installing Pass while
-  signed in. Neither fork has been tried against Proton's live service.
-
-### Native state and windows (Calendar, Drive and the shared sign-in)
-
-- `src/features/proton_native.rs`: state lives in a process-wide
-  `OnceLock<Mutex<State>>` holding the signed-in client, a pending sign-in step
-  (`Outcome`: `Done`, `TwoFactor`, `MailboxPassword`, `Failed`), a generation
-  counter (bumped on each sign-in or out so stale work can tell), and in-memory
-  Drive and Calendar caches. Saving and loading `session.json` is in the same
-  file. Sign-out revokes the session at Proton and deletes the file.
+- `src/features/proton_native.rs`: one `Service` per app (`Calendar`, `Drive`).
+  Each has its own state (a `OnceLock<Mutex<State>>`): the signed-in client, the
+  pending sign-in step and its own half-finished session, a generation counter,
+  and the Drive index or Calendar cache. Each saves its session in its own folder,
+  `~/.local/share/spotty/proton-calendar/` or `proton-drive/` (mode 0700; the
+  file 0600, ignored if group or other can read it). The file holds the tokens and
+  the account's name and email. The key password goes to the desktop keyring
+  (`spotty_proton_account::SecretService`, service `com.spotty.Spotty.proton`,
+  names `proton-calendar` and `proton-drive`). Sign-out revokes that app's
+  session at Proton, deletes its file and its keyring entry.
+- Loading the saved session (`client`, `load_saved`) reads the keyring, so it runs
+  on a worker thread (`load_in_background`). `signed_in` never blocks: until the
+  session has loaded it reports "checking". An old file that still holds
+  `key_password` is migrated into the keyring and rewritten without it. A file
+  whose key the keyring can't return is treated as signed out and deleted. If the
+  keyring refuses a new sign-in (not running), the sign-in is refused and its tokens
+  are revoked in the background.
 - `src/ui/proton_native_ui.rs`:
-  - `open_account_window(parent)`: the Proton account window. It has the
-    sign-in form (Proton email, password, two-factor code, mailbox password), a
-    signed-in page with the **Proton apps** list (each app's state, and a
-    **Sign in** button for Pass and VPN), and **Sign out**. Sign-out asks first,
-    then signs out of everything (`AccountWindow::sign_out_everywhere`): Pass,
-    VPN, the native session and the web profile. Closing the window during a
-    sign-in cancels that sign-in at Proton.
-  - `add_account_row(page)`: the "Proton account" group in the Calendar and Drive
-    settings, a signed-in row with **Manage…** or a "Sign in to Proton" row. Both
-    open the account window. Pass and VPN have their own account sections in
-    `settings_window.rs`.
+  - `open_account_window(parent, service)`: the sign-in window of one app. Signed
+    out it shows the shared sign-in page; signed in, the Account group and a note.
+    Closing it during a sign-in cancels that sign-in at Proton.
+  - `add_account_group` and `SettingsSignIn::wrap`: the Calendar and Drive settings
+    popups. Signed out, only the sign-in page; signed in, the settings with the
+    Account group first.
   - `handle(parent, op, target)` routes the `ProtonNative` actions. `open_drive`
     and `open_agenda` build the Drive browser and the Calendar agenda. A small
     `run()` helper moves blocking work to `gio::spawn_blocking` and returns to the
     GTK thread.
-- `src/search/proton.rs`: search rows for `cal`, `drive` and `vpn`, including the
+- `src/search/proton.rs`: search rows for `cal` and `drive`, including the
   synced-folder search for `drive` (for example a local rclone folder).
-- `src/features/proton_session.rs`:
-  - `after_install(id)`: called when a Proton integration is installed in the
-    Store. Calendar and Drive report signed in when a native session exists. Pass
-    and VPN sign in with the shared sign-in when there is one.
-  - `share_sign_in()`: after a native sign-in, gives each installed Pass or VPN
-    that is not signed in yet the shared sign-in.
-  - `share_with(id)`: gives one app the shared sign-in (the account window's Sign
-    in button).
-  - `hand_to_vpn()`: forks a VPN session and imports it. Runs off the GTK thread.
-  - `app_signed_in(id)`, `signing_in(id)`: what the UI shows for each app.
+- `src/features/proton_session.rs`: `app_signed_in(id)`, `after_install(id)` (the
+  Store's hook: reports whether the app already has its own working sign-in),
+  and `SigningIn`, the marker the UI reads while an app is signing in.
 
 ### Proton Pass
 
 - `src/features/proton_pass.rs` runs `pass-cli` as a short-lived child with a
-  cleared environment, its own session folder, the desktop keyring, and the
-  update check and telemetry disabled. Listings use `item list --output json`
-  without `--show-secrets`. Secrets are read with `item view --field` when the
-  user picks an action, then cleared from the clipboard after 30 seconds.
-- Sign-in (`sign_in`): runs `pass-cli login` and reads the approval link from its
-  output. The link is parsed and approved with the native session
-  (`approve_pass_login`). Without a native session, the account window opens
-  instead, and Pass signs in once Spotty is signed in to Proton (`share_sign_in`).
-  A sign-in that nobody finishes is stopped after 10 minutes.
+  cleared environment (`command()`), its own session folder, the desktop keyring,
+  and the update check and telemetry off. Listings use `item list --output json`
+  without `--show-secrets`. Fields are read only when needed: `item view
+  --output json` for the vault window (`view_item`), `item view --field` for the
+  search rows, `item totp --output json` for the live one-time code (`totp_now`).
+  Copies go through `copy_secret`, marked as passwords, cleared after the delay
+  in the settings (`clear_after_secs`).
+- Sign-in (`src/features/proton_pass_login.rs`): `begin(email, password)` starts
+  `pass-cli login --interactive <email>` on a new pseudo-terminal (`posix_openpt`,
+  made the controlling terminal with `setsid` and `TIOCSCTTY`, echo off on the
+  slave). `pass-cli` reads its password from `/dev/tty` (rpassword), so Spotty writes
+  the password, then any two-factor code or mailbox password, to the terminal when
+  each prompt appears. A prompt is the last unfinished line ending in a colon. The
+  client's "Successfully logged in" line or exit status 0 means done. Secrets are
+  never on argv or in the environment.
+- `src/features/proton_pass_item.rs` parses the item JSON (the field names follow
+  Proton's item model in `proton-pass-types`). It is tolerant about nesting; the
+  exact JSON from `pass-cli` has not been checked against a live account.
+- `src/ui/proton_pass_ui.rs`: the vault window (`open_vault`), an `adw` window
+  opened from the **Open vault…** settings row or the **Open Proton Pass vault**
+  trigger row. It is not modal and has its own window group. The item list holds
+  titles and usernames only; an item's fields are held while its detail is shown
+  and wiped on switch, lock and close. Revealed secrets re-mask after 30 s. The
+  window follows the PIN lock every second and blanks itself when it locks.
+  `settings_sign_in` and `SettingsSignIn::wrap` are the Pass settings (signed out:
+  only the sign-in page; signed in: the Account group, the PIN and the settings),
+  `PassLogin` is Pass's backend for the shared page, and `add_settings_group`
+  holds the clipboard delay, usernames, default vault and title-search settings.
+- Search (`src/search/pass.rs`): the listing has titles, vault names, item kinds
+  and ids (pass-cli 2.4.2's `item list --output json` has no username, email, URL
+  or secret). Ranking: title matches first, then username, then vault or kind, then
+  words spread over fields. The `username` field of `Item` is read if a listing ever
+  carries it; with the pinned client it stays empty.
+- `src/ui/proton_pass_preview.rs` (`PassPreview`, one per search window): the item
+  the selected `pass` row names, with its username, masked password, one-time code
+  and website, each with a copy button, and "copy all" for a login. It is fetched
+  250 ms after the selection settles, only while its page is mapped and Pass is
+  unlocked; a different selection, an unmap or a lock drops its fields.
+  `features/preview.rs` holds it as the `pass` page of `PreviewPane`.
+- Copy all (`src/features/proton_pass_sequence.rs`, `src/ui/proton_pass_paste.rs`):
+  a `gdk::ContentProvider` subclass offers the username, then the password, then
+  the one-time code (read at its paste). A text read by another app (a write made
+  while no Spotty window has focus), after 300 ms of quiet, offers the next step.
+  The provider carries the password hint and has no storable formats. It ends after
+  60 s, on a lock, or when another copy replaces it, and then clears the clipboard
+  if the sequence still holds it. `clipboard.rs` checks the hint before it reads.
+- `src/features/proton_pass_settings.rs` stores those settings in
+  `~/.config/spotty/pass-settings.json` (mode 0600). They hold no secret.
 - `src/features/proton_pass_pin.rs` holds the PIN lock. With a PIN set, the
-  `pass` trigger shows one locked row and `run_search_action` asks for the PIN
-  before any secret is read. Only a salt and a PBKDF2-HMAC-SHA256 hash are
-  stored. It is a lock on Spotty's use of Pass, not encryption of the vault.
+  `pass` trigger shows one locked row, the vault window shows its lock page, and
+  `run_search_action` and every copy ask for the PIN before a secret is read. Only
+  a salt and a PBKDF2-HMAC-SHA256 hash are stored. Auto-lock choices: 1, 2, 5, 10,
+  15, 30, 60 and 240 minutes, or Lock now. It is a lock on Spotty's use of Pass,
+  not encryption of the vault.
 - `proton-pass-embedded/build.rs` (with the `bundled` feature) runs
   `prepare_bundle.py`, which fetches the source pinned in `sources.json`, checks
   its SHA-256, and builds `pass-cli --locked`. The binary is compressed into Spotty.
@@ -265,8 +319,8 @@ other app. No login password is shared.
   dependencies. `prepare_bundle.py` checks each source hash and installs wheels
   with `pip --require-hashes`. The bundle is compressed into Spotty.
 - `helper/spotty_vpn_helper.py` runs Proton's library and talks JSON lines with
-  Spotty. The password, 2FA code and fork selector go straight to the library
-  over stdin. The library identifies itself as Proton's Linux GUI client
+  Spotty. The username, password and 2FA code go straight to the library over
+  stdin. The library identifies itself as Proton's Linux GUI client
   (`ClientTypeMetadata(type="gui")`), not as `external-drive-spotty`.
 - Spotty's `src/proton_vpn.rs` (**Spotty checkout**) owns the helper process.
   Every call blocks, so it runs off the GTK thread.
@@ -275,8 +329,9 @@ other app. No login password is shared.
 
 A service, not a search trigger (`category: service`). `proton-bridge-gui/`
 holds the login companion and the bundled Bridge engine. Its own README covers
-packaging and verification. `src/features/proton_bridge.rs` only reports whether
-Bridge is supported on this platform.
+packaging and verification. Its sign-in is its own; Spotty does not follow it or
+reuse its details. `src/features/proton_bridge.rs` only reports whether Bridge is
+supported on this platform.
 
 ## Data locations
 
@@ -285,13 +340,17 @@ Bridge is supported on this platform.
 | `~/.config/spotty/config.json` | Spotty settings, including `trigger_repo_url` (no UI field) | Spotty |
 | `~/.config/spotty/spotty.pid` | PID of the running daemon | Spotty |
 | `~/.config/spotty/spotty_keyword.txt` | Keyword passed to a summoned daemon | Spotty |
-| `~/.local/share/spotty/proton-account/` | Folder, mode 0700 | `proton_native.rs` |
-| `~/.local/share/spotty/proton-account/session.json` | Spotty's Proton session: tokens and key password, not encrypted. Mode 0600. Ignored (treated as signed out) if group or other can read it. Sign-out deletes it. The Pass and VPN sessions are forked from it | `proton_native.rs` |
+| `~/.local/share/spotty/proton-calendar/session.json` | Calendar's session: tokens, account name and email. No password and no key password. Not encrypted. Folder 0700, file 0600. A file others can read is removed. Sign-out deletes it | `proton_native.rs` |
+| `~/.local/share/spotty/proton-drive/session.json` | Drive's session, same rules as Calendar's | `proton_native.rs` |
+| Desktop keyring, service `com.spotty.Spotty.proton`, names `proton-calendar` and `proton-drive` | The key password (it unlocks the account's keys) of Calendar and Drive. Sign-out deletes it | `proton-account/src/secrets.rs` |
+| `~/.local/share/spotty/proton-account/session.json` | Old shared session from earlier versions. No longer read or written; can be deleted by hand | (none) |
+| `~/.config/spotty/pass-settings.json` | Proton Pass preferences: clipboard delay, usernames, default vault, title search. Mode 0600. No secret | `proton_pass_settings.rs` |
 | `~/.config/spotty/pass-pin.json` | Salt, PBKDF2 hash and lock timeout of the Proton Pass PIN. Mode 0600. Removing the PIN deletes it | `proton_pass_pin.rs` |
-| `~/.local/share/spotty/proton-pass/` | `pass-cli`'s own session folder (Pass's forked session); key in the desktop keyring | `pass-cli` |
+| `~/.local/share/spotty/proton-pass/` | `pass-cli`'s own session folder (Pass's own session, from its own sign-in); key in the desktop keyring | `pass-cli` |
 | `~/.cache/spotty/proton-pass/<bundle id>/` | Unpacked `pass-cli` (owner-only folder) | `proton_pass.rs` |
 | `~/.cache/spotty/proton-vpn/<bundle id>/` | Unpacked VPN bundle and helper | `proton_vpn.rs` (**Spotty checkout**) |
 | Desktop keyring | Pass's session key, VPN library session | Proton's clients |
+| Bridge's vault and keyring entries | Bridge's saved accounts and logins (the README of `proton-bridge-gui` describes them) | Bridge engine. Spotty keeps no Bridge password |
 | `build/spotty-proton-pass-cache/`, `build/spotty-proton-vpn-cache/` | Build caches (gitignored). Overridden by `SPOTTY_PROTON_PASS_CACHE` and `SPOTTY_PROTON_VPN_CACHE` | `prepare_bundle.py` |
 
 Unlocked keys, decrypted names and calendar events are in memory only. A Drive
@@ -299,30 +358,38 @@ file saved by the user goes to the Downloads folder as a plain file.
 
 ## Gaps and stale spots (known, not fixed here)
 
-- **The Pass and VPN forks have not been tried against Proton's live service.**
-  Proton may refuse a fork from Spotty's third-party session. VPN then falls back
-  to its own form. Pass has no separate form.
-- **Pass's sign-out is not awaited.** `sign_out_everywhere` (`proton_native_ui.rs`)
-  calls `proton_pass::sign_out()`, which runs on a background thread. Spotty then
-  signs out of Proton without waiting for it. The code comment's "Pass and VPN
-  first" order is therefore not guaranteed.
-- `src/features/proton_pass.rs`: the module header (lines 10-14) still says Pass
-  sign-in is Proton's web sign-in. That is stale.
+- **No Proton sign-in has been tried against Proton's live service.** The fake
+  server covers Calendar and Drive (protocol and crypto). Pass's interactive
+  login has not been run against a live account, and neither has VPN's sign-in
+  on the shared page.
+- **Pass's login prompts are matched by text.** `proton_pass_login` answers a
+  prompt that contains "password" or a code word ("code", "2fa", "totp",
+  "authenticator"). If `pass-cli` words a prompt differently, the sign-in stops
+  with an error rather than guessing.
+- **Pass's JSON shape is assumed.** `proton_pass_item` follows Proton's item model
+  and looks keys up by name. The exact output of `pass-cli item view --output json`
+  and `item totp --output json` has not been checked against a live account.
+- **Pass search doesn't match usernames or web addresses.** The listing lacks
+  them, and reading each item to find them would read every item (`item view` is
+  one fetch of the whole item). Vault names, kinds and titles are searched.
+- **The copy-all paste sequence can be advanced by any reader.** An app that reads
+  the clipboard without pasting (a clipboard manager that ignores the hint) counts
+  as a paste. Spotty can't tell the readers apart; it only ignores reads made while
+  one of its own windows has focus.
+- **Pass's one-time codes use a 30-second period.** The countdown assumes 30 s.
+  Extra TOTP fields (not the login's own code) are shown as text, not as live codes.
+- **Pass's sign-out is not awaited.** `sign_out_everywhere` was removed with the
+  shared sign-in; the Pass settings' sign-out runs `pass-cli logout` on a background
+  thread and does not wait for it.
 - `src/features/proton_native.rs`: the header says the password is "forgotten"
   after the proof. It is kept while a two-factor code or mailbox password is
   pending.
-- `triggers/proton-calendar.json` and `triggers/proton-drive.json` say to sign in
-  "in the settings, in Spotty's own form". The sign-in is now the Proton account
-  window. `triggers/proton-vpn.json` says to sign in in the VPN window with a
-  username and password. That is now the fallback. These manifests were not
-  updated in this pass.
 - The VPN client library identifies itself as Proton's Linux GUI client, not as
   `external-drive-spotty`. SOUL.md, rule 4, says Spotty never poses as one of
   Proton's apps. Whether this is acceptable is for the maintainer to decide.
-- In this repo only `proton_native.rs` reads or writes `session.json`.
 - OpenPGP signature checks on Drive names and calendar events are not done yet.
 - FIDO2-only accounts, Proton's human-verification check, shared-with-me, photos
-  and trash in Drive, and all write operations are not supported.
-- The live sign-in path, including the Pass and VPN forks, has not been run
-  against Proton's live service. The fake server is the only test of the sign-in
-  chain.
+  and trash in Drive, and all write operations are not supported. The Pass window
+  is view and copy only.
+- The Pass favicon feature is not implemented. It would fetch websites, so it was
+  left out rather than offered as a switch that does nothing.

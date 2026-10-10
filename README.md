@@ -97,12 +97,10 @@ For packaging, credentials, licensing and verification, see
 Install **Proton VPN** from the Store's **Proton** section. Spotty includes
 Proton's official Linux VPN client library
 ([`proton-vpn-embedded/`](proton-vpn-embedded/)), so no separate Proton app or
-CLI is needed. Sign in to your Proton account once in Spotty (see
-[one Proton sign-in](#one-proton-sign-in-for-calendar-drive-pass-and-vpn)). VPN
-then gets its own session, forked from that account, and no password is shared.
-The Proton VPN window also has its own form ("Or sign in to Proton VPN only", with
-two-factor codes). There the password goes straight to Proton's client, and
-Spotty never stores it.
+CLI is needed. Proton VPN has its own sign-in: type your Proton VPN username and
+password in the Proton VPN window (two-factor codes included). The password goes
+straight to Proton's client, and Spotty never stores it. See
+[separate sign-ins](#a-separate-sign-in-for-each-proton-app).
 
 The `vpn` trigger connects and disconnects from search: `vpn on` / `vpn off`,
 country suggestions as you type (`vpn ge` → 🇩🇪 Germany, 🇬🇪 Georgia…), cities
@@ -114,31 +112,35 @@ forwarding, IPv6).
 Build Spotty with `--features proton-vpn` to include the client; see
 [`proton-vpn-embedded/README.md`](proton-vpn-embedded/README.md).
 
-## One Proton sign-in for Calendar, Drive, Pass and VPN
+## A separate sign-in for each Proton app
 
-Proton Calendar, Proton Drive, Proton Pass and Proton VPN share one sign-in in
-Spotty. Sign in once in Spotty's **Proton account** window. It is Spotty's own
-libadwaita form: your Proton email and password, the authenticator code if your
-account uses one, and the mailbox password if you have one. You reach it from the
-settings of Calendar, Drive and Pass, from the **Your Proton account** section of
-the Proton VPN window, and from the **Sign in** rows of the `cal`, `drive` and
-`pass` triggers.
+Every Proton app in Spotty signs in on its own, with its own session. Nothing is
+shared: signing out of one app never signs out another, and no app's session is
+given to another.
 
-- **Calendar and Drive** use that session directly.
-- **Pass and VPN** each get their own session, forked from it with Proton's
-  session fork. No password is shared with them. For Pass, `pass-cli` prints an
-  approval link with a one-time key. Spotty reads that link and approves it with
-  your Proton session. No web page opens.
-- Pass and VPN installed while you are signed in use the same sign-in. After you
-  sign in, installed Pass and VPN that are not signed in yet get it too.
-- The **Proton apps** list in the account window shows each app's state. Its
-  **Sign in** button gives Pass or VPN this sign-in.
-- Proton Mail Bridge keeps its own sign-in.
+- **Every Proton app** shows the same sign-in page: your Proton email and password,
+  then the authenticator code if your account uses one, then the mailbox password
+  (or Pass's extra password) if you have one. Enter moves each step on; Back
+  cancels the sign-in and clears what was typed. Once signed in, Calendar, Drive,
+  Pass and VPN show an **Account** row at the top of their settings with the email
+  and **Sign out** (it asks first). Mail Bridge lists its saved accounts instead,
+  each with its own **Sign out**.
+- **Proton Calendar** and **Proton Drive** each sign in on their own, from their
+  settings, the `cal` or `drive` triggers, or the **Sign in** row. Each keeps its
+  session in its own folder
+  (`~/.local/share/spotty/proton-calendar/` and `~/.local/share/spotty/proton-drive/`).
+- **Proton Pass** signs in with its own password, through Proton's official Pass
+  client (`pass-cli login --interactive`). Type your Proton email and password in
+  the Proton Pass settings. Spotty runs the client on a terminal and answers its
+  prompts (password, then a two-factor code or mailbox password when needed).
+  The password is never stored and never put on a command line or in the
+  environment. Pass keeps its session in `~/.local/share/spotty/proton-pass/`.
+- **Proton VPN** signs in with its own username and password, on the same page.
+- **Proton Mail Bridge** signs in on the same page, through Bridge's own login.
 
-The Pass and VPN sessions have not been tried against Proton's live service. If
-Proton refuses one, Spotty shows an error. VPN can then be signed in with its own
-form. Pass has no separate form, so if Proton refuses the Pass session, Pass
-can't sign in from Spotty.
+Each sign-in has been tested only against Spotty's fake Proton server (for
+Calendar and Drive) and not against Proton's live service. Proton may refuse or
+ask for steps Spotty doesn't support; Spotty then shows the error.
 
 There is no web page, browser engine or helper program for Calendar and Drive:
 Spotty speaks to Proton's API itself (the [`proton-account/`](proton-account/)
@@ -159,12 +161,27 @@ manager extensions:
 - Cards copy the card number (and security code), notes copy their text, and
   other item types open in Proton Pass.
 - Secrets are marked as passwords on the clipboard, so Spotty's clipboard
-  history skips them, and are cleared 30 seconds later.
+  history skips them, and are cleared after the delay you choose (30 seconds by
+  default).
 - Vault items never show up in the everyday search.
 
 Spotty loads only item titles (Proton's secret-free listing). Everything else
-is read at the moment you copy it and wiped from Spotty's memory right after.
-Pass signs in with the shared Proton sign-in (see above); no web page opens.
+is read when you open an item or copy from it, and wiped from Spotty's memory
+right after.
+
+Open **Open Proton Pass vault** from the `pass` trigger, or **Open vault…** in
+Proton Pass's settings, to get a window like the browser extension's: pick a
+vault, search, open an item and see its fields. Passwords, card numbers, security
+codes, PINs and private keys stay masked until you reveal them (they re-mask after
+30 seconds). One-time codes update live with a countdown. Copy buttons put the
+value on the clipboard, marked as a password. The window is view and copy only:
+it cannot create, edit, trash or generate items.
+
+The Proton Pass settings also hold: how long copied secrets stay on the clipboard
+(15 s, 30 s, 1 min, 2 min or 5 min; 30 s by default), whether usernames are shown
+under items, the default vault, whether the `pass` trigger searches item titles,
+and the PIN lock with its auto-lock time (1 min to 4 hours, or Lock now).
+
 Pass's key lives in your desktop keyring, which must be unlocked. Pass needs a
 paid Proton Pass plan.
 Build Spotty with `--features proton-pass` to include the client; see
@@ -191,36 +208,43 @@ under **Settings → Search → Services and integrations**, where you sign in.
   Settings can also point at a local folder you already sync with Proton Drive
   (for example with rclone) so `drive <name>` searches it too.
 
-Signed out, both triggers show a **Sign in** row that opens the Proton account
-window.
+Signed out, each trigger shows a **Sign in** row that opens that app's own sign-in
+window (Calendar and Drive sign in separately).
 
 ### How your Proton sign-in is handled
 
-- **Your password** is typed into a Spotty field and turned into a one-time SRP
-  proof. Only the proof leaves your computer, and the field is cleared straight
-  away. Spotty also checks Proton's proof back, so it never signs in to an
-  impostor. The password is kept in memory only while a two-factor code or
-  mailbox password is still to be entered. It is wiped when that step ends, or
-  when the sign-in is cancelled (closing the account window cancels it).
-- **Saved on disk**, in a folder only you can read
-  (`~/.local/share/spotty/proton-account/session.json`, mode 0600): Proton's
-  session tokens and the *key password* derived from your password, which
-  unlocks your Proton keys. The file is not encrypted. Anyone who can read your
-  files as you can use it, just like a browser's saved session. Spotty ignores
-  the file if group or others can read it.
-- **Pass** keeps its own session in `~/.local/share/spotty/proton-pass/`, with
-  its key in your desktop keyring. Spotty sends the key password to Proton only
-  inside an AES-256-GCM payload. Only `pass-cli` can open it, with the one-time
-  key from its approval link. Spotty never sends that key anywhere.
+- **Your password** is typed into the sign-in page and its field is emptied at
+  once. For Calendar and Drive it is turned into a one-time SRP proof, and Spotty
+  checks Proton's proof back, so it never signs in to an impostor. For Pass, VPN
+  and Bridge the password goes straight to that app's own client. Spotty keeps no
+  password, two-factor code, mailbox password or Pass extra password after the
+  sign-in. A step that is still waiting (a code, a mailbox password) holds only
+  what it needs, and is wiped when that step ends or the sign-in is cancelled
+  (Back, or closing the window).
+- **Saved on disk**, one folder per app, readable only by you (mode 0700 for the
+  folder, 0600 for the file). Each app's session is its own:
+  `~/.local/share/spotty/proton-calendar/session.json` and
+  `~/.local/share/spotty/proton-drive/session.json` hold that app's session tokens
+  and its account's name and email, and nothing else secret. The files are not
+  encrypted; anyone who can read your files as you can use the tokens, like a
+  browser's saved session. Spotty ignores a file if group or others can read it.
+  An older `proton-account/session.json` from earlier versions is no longer read;
+  you can delete it.
+- **In the desktop keyring**: the *key password* derived from your password, which
+  unlocks your Proton keys, for Calendar and Drive. Spotty stores it through Secret
+  Service (GNOME's keyring, for example) and never writes it to a file. Without a
+  running keyring Spotty cannot keep a sign-in, so it refuses to sign in and says why.
+  Signing out deletes it. An older session file that still held the key password is
+  migrated to the keyring at the next start.
+- **Pass** keeps its own session in `~/.local/share/spotty/proton-pass/`, with its
+  key in your desktop keyring. Its password goes to `pass-cli` only through the
+  terminal Spotty opens for it; it is never written to disk, argv or the
+  environment.
 - **VPN** keeps its session in your desktop keyring, as Proton's own app does.
-  The fork selector goes to the VPN client and is never stored or logged.
-- **Sign out** in the account window signs out of everything. Spotty ends its
-  session at Proton and deletes `session.json`. The Pass and VPN sessions are
-  forked from that session (with `Independent: 0`), so Proton should end them too;
-  that is not tested against Proton's live service. Spotty also signs Pass and
-  VPN out here and erases any Proton web profile left by older versions. Pass's sign-out runs in the
-  background, and Spotty does not wait for it to finish. Signing out in Pass's
-  settings removes only Pass's session on this computer.
+- **Sign out** in a Calendar or Drive sign-in window ends that app's session at
+  Proton and deletes its `session.json`. Signing out in Pass's settings removes
+  only Pass's session on this computer. Proton VPN's sign-out ends only VPN's session.
+  No sign-out touches another app.
 - **Only in memory**: unlocked keys, decrypted file names, calendar events and
   Pass item titles. They are never written to disk and disappear when you sign
   out or quit.

@@ -30,9 +30,9 @@
 - Never write unlocked keys, decrypted names, calendar events or vault contents
   to disk.
 - Never run a Proton sign-in in a web view or through a third-party CLI.
-- Never share a Proton session except through the session-fork whitelist in
-  `proton-account/src/fork.rs`. Never add a client id to that whitelist without
-  a test and a review.
+- Never share a Proton session or its password with another Proton app. Every
+  app (Calendar, Drive, Pass, VPN, Mail Bridge) signs in on its own, with its own
+  session. There is no session fork.
 - Never add LibreOffice, `soffice` or `libreoffice` conversions.
 - Never build or run a Flatpak.
 - Never edit `trigger-backends/` inside `.integration/Spotty` by hand. Change this
@@ -49,7 +49,7 @@
   `index.json` and a manifest out of step.
 - Never commit, push or open a PR unless the user asks. When asked, push only this
   trigger repo.
-- Never claim a live Proton login works, including the Pass and VPN forks. The
+- Never claim a live Proton login works, for any Proton app. The
   tests use a fake Proton server; say so whenever you report on the sign-in path.
 
 ## How to verify

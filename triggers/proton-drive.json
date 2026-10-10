@@ -5,11 +5,11 @@
   "description": "Proton Drive built into Spotty: sign in natively, search and browse My files, download with Enter",
   "icon": "folder-remote-symbolic",
   "shortcut": "",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "author": "spotty",
   "native": true,
   "preinstalled": false,
-  "help": "Proton Drive, built into Spotty\n\nInstalling adds the `drive` trigger and a Proton Drive row under Settings → Search → Services and integrations. `drive <name>` finds files and folders in My files by their decrypted names; Enter on a folder opens Spotty's Drive browser there, on a file downloads it to your Downloads folder and opens it. `drive` alone opens the browser. `drive trash`, `drive shared`, `drive with-me`, `drive photos` and `drive devices` open those places in your browser.\n\nSign in once with your Proton account (the Proton account window: email, password and your authenticator code if you use one); the same sign-in serves Proton Calendar, Drive, Pass and VPN. Spotty talks to Proton itself — no web page and no helper program. Your password becomes a one-time proof and is never stored; Spotty saves Proton's session and a key password in an owner-only file and decrypts names and files on this computer, in memory only. Accounts protected only by a hardware security key can't sign in yet. Optionally pick a local folder you keep in sync with Proton Drive; `drive <name>` searches it too. Uninstalling removes the trigger only.",
+  "help": "Proton Drive, built into Spotty\n\nInstalling adds the `drive` trigger and a Proton Drive row under Settings → Search → Services and integrations. `drive <name>` finds files and folders in My files by their decrypted names; Enter on a folder opens Spotty's Drive browser there, on a file downloads it to your Downloads folder and opens it. `drive` alone opens the browser. `drive trash`, `drive shared`, `drive with-me`, `drive photos` and `drive devices` open those places in your browser.\n\nSign in to Proton Drive with your Proton account in its own sign-in window: your email, password and authenticator code if you use one. Drive has its own sign-in and session; no other Proton app uses it. Spotty talks to Proton itself — no web page and no helper program. Your password becomes a one-time proof and is never stored; Spotty saves this app's session and a key password in an owner-only file and decrypts names and files on this computer, in memory only. Accounts protected only by a hardware security key can't sign in yet. Optionally pick a local folder you keep in sync with Proton Drive; `drive <name>` searches it too. Uninstalling removes the trigger only.",
   "action": {
     "type": "native"
   },

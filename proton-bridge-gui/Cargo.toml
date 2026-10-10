@@ -29,6 +29,8 @@ tonic = { version = "0.14", features = ["transport", "tls-ring"] }
 tonic-prost = "0.14"
 tower = { version = "0.5", features = ["util"] }
 zeroize = "1"
+# The one sign-in page every Proton app shows (also used by Spotty).
+spotty-proton-login = { path = "../proton-login" }
 
 [build-dependencies]
 protoc-bin-vendored = "3"

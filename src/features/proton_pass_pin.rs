@@ -27,7 +27,7 @@ const ITERATIONS: u32 = 210_000;
 const MIN_LEN: usize = 4;
 const MAX_LEN: usize = 64;
 /// "Lock again after" choices, in minutes.
-const TIMEOUTS: [u32; 4] = [1, 5, 15, 60];
+const TIMEOUTS: [u32; 8] = [1, 2, 5, 10, 15, 30, 60, 240];
 const DEFAULT_MINUTES: u32 = 5;
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -137,15 +137,27 @@ pub fn unlocked() -> bool {
     !enabled() || session().lock().unwrap().unlocked_until.is_some_and(|until| until > Instant::now())
 }
 
+/// Lock Pass now. The vault listing is forgotten with it.
 pub fn lock_now() {
     session().lock().unwrap().unlocked_until = None;
+    crate::proton_pass::forget_listing();
 }
 
 fn unlock_for(minutes: u32) {
-    let mut session = session().lock().unwrap();
-    session.unlocked_until = Some(Instant::now() + Duration::from_secs(u64::from(minutes) * 60));
-    session.misses = 0;
-    session.blocked_until = None;
+    let lasts = Duration::from_secs(u64::from(minutes) * 60);
+    {
+        let mut session = session().lock().unwrap();
+        session.unlocked_until = Some(Instant::now() + lasts);
+        session.misses = 0;
+        session.blocked_until = None;
+    }
+    // The timed unlock runs out on its own: forget the listing then, unless a
+    // later unlock has extended it.
+    glib::timeout_add_once(lasts + Duration::from_secs(1), || {
+        if !unlocked() {
+            crate::proton_pass::forget_listing();
+        }
+    });
 }
 
 pub fn timeout_minutes() -> u32 {
@@ -367,7 +379,11 @@ pub fn add_settings_group(page: &adw::PreferencesPage, parent: &adw::Window) {
         .build();
     let labels: Vec<String> = TIMEOUTS
         .iter()
-        .map(|m| if *m == 60 { gettext("1 hour") } else { gettext("{n} min").replace("{n}", &m.to_string()) })
+        .map(|m| match *m {
+            60 => gettext("1 hour"),
+            240 => gettext("4 hours"),
+            _ => gettext("{n} min").replace("{n}", &m.to_string()),
+        })
         .collect();
     timeout.set_model(Some(&gtk::StringList::new(&labels.iter().map(String::as_str).collect::<Vec<_>>())));
     let lock = adw::ActionRow::builder().title(gettext("Lock now")).subtitle(gettext("Ask for the PIN again next time")).build();

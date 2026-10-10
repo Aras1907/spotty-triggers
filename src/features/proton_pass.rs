@@ -4,34 +4,39 @@
 //!
 //! Privacy and security rules this module keeps:
 //! - The vault listing Spotty keeps in memory is Proton's *summary*: item
-//!   titles, types and ids. Usernames, passwords, one-time codes and notes are
-//!   fetched only when you pick that action, are never stored, and are wiped
-//!   from Spotty's buffers right after they reach the clipboard.
+//!   titles, types, ids and (when the client gives it) the username. Passwords,
+//!   one-time codes, card numbers and notes are read only when an item is
+//!   opened or an action is picked, are never stored, and are wiped from
+//!   Spotty's buffers right after they reach the clipboard or the screen.
 //! - The clipboard copy carries `x-kde-passwordManagerHint`, so Spotty's own
 //!   clipboard history (and other managers that honour it) skip it, and Spotty
-//!   clears it again after [`CLEAR_CLIPBOARD_SECS`] if it is still there.
-//! - Sign-in uses Spotty's Proton account: the client asks for a session fork
-//!   and Spotty approves it natively (`crate::proton_session`), so no password
-//!   is typed here and no web page opens.
+//!   clears it again after the delay chosen in Proton Pass's settings if it is
+//!   still there.
+//! - Sign-in is Proton Pass's own: `crate::proton_pass_login` runs
+//!   `pass-cli login --interactive` on a terminal and answers its prompts. No
+//!   other Proton app's session is used, and no web page opens.
 //! - The client runs with a cleared environment, its own session folder and
 //!   key in the desktop keyring, and with its update check and telemetry off.
 //!
 //! Every call that talks to the client blocks: run them off the GTK thread.
 
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// Seconds before a copied secret is removed from the clipboard again.
-pub const CLEAR_CLIPBOARD_SECS: u32 = 30;
+/// Seconds before a copied secret is removed from the clipboard again: the
+/// choice in Proton Pass's settings.
+pub fn clear_after_secs() -> u32 {
+    crate::proton_pass_settings::get().clipboard_secs
+}
+
 const REFRESH_AFTER: Duration = Duration::from_secs(180);
 const RETRY_AFTER: Duration = Duration::from_secs(20);
 const SHORT: Duration = Duration::from_secs(30);
-const SIGN_IN_WAIT: Duration = Duration::from_secs(600);
 
 pub fn available() -> bool {
     spotty_proton_pass_embedded::bundled()
@@ -52,7 +57,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn parse(text: &str) -> Kind {
+    pub(crate) fn parse(text: &str) -> Kind {
         match text {
             "login" => Kind::Login,
             "note" => Kind::Note,
@@ -87,6 +92,8 @@ pub struct Item {
     pub title: String,
     pub kind: Kind,
     pub vault: String,
+    /// The username or email, when the listing has one (never a secret).
+    pub username: String,
 }
 
 impl Item {
@@ -150,8 +157,16 @@ pub fn find(target: &str) -> Option<Item> {
     with_items(|_, items| items.iter().find(|item| item.target() == target).cloned())
 }
 
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Bumped whenever the listing or the sign-in state changes.
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::SeqCst)
+}
+
 /// Ask the UI to redraw anything that shows Pass state.
 fn notify_ui() {
+    GENERATION.fetch_add(1, Ordering::SeqCst);
     glib::MainContext::default().invoke(crate::app::refresh_search_window);
 }
 
@@ -176,9 +191,9 @@ pub fn ensure_loaded() {
     }
 }
 
-/// Reload the vault listing now.
+/// Reload the vault listing now. Nothing is loaded while the PIN locks Pass.
 pub fn refresh() {
-    if !available() {
+    if !available() || !crate::proton_pass_pin::unlocked() {
         return;
     }
     {
@@ -190,31 +205,49 @@ pub fn refresh() {
     }
     std::thread::spawn(|| {
         let result = fetch_listing();
-        let mut signed_out = false;
+        // Locked while this was loading: the listing is dropped, not shown.
+        let unlocked = crate::proton_pass_pin::unlocked();
         {
             let mut cache = cache();
             cache.fetched = Some(Instant::now());
             match result {
-                Ok((items, vaults)) => {
-                    cache.items = items;
-                    cache.vaults = vaults;
-                    cache.state = State::Ready;
-                }
                 Err(Failure::SignedOut) => {
                     cache.items.clear();
                     cache.vaults = 0;
                     cache.account.clear();
                     cache.state = State::SignedOut;
-                    signed_out = true;
+                }
+                _ if !unlocked => {
+                    cache.items.clear();
+                    cache.vaults = 0;
+                    cache.fetched = None;
+                    cache.state = State::Idle;
+                }
+                Ok((items, vaults)) => {
+                    cache.items = items;
+                    cache.vaults = vaults;
+                    cache.state = State::Ready;
                 }
                 Err(Failure::Other(message)) => cache.state = State::Failed(message),
             }
         }
         notify_ui();
-        if signed_out {
-            crate::proton_session::share_pass_if_signed_out();
-        }
     });
+}
+
+/// Forget the vault listing: titles, vault names and usernames. Called when the
+/// PIN locks Pass, so nothing of the vault stays in memory while it is locked.
+pub fn forget_listing() {
+    {
+        let mut cache = cache();
+        cache.items.clear();
+        cache.vaults = 0;
+        cache.fetched = None;
+        if matches!(cache.state, State::Ready | State::Failed(_)) {
+            cache.state = State::Idle;
+        }
+    }
+    notify_ui();
 }
 
 fn fetch_listing() -> Result<(Vec<Item>, usize), Failure> {
@@ -280,6 +313,12 @@ fn parse_items(text: &str, vault: &str) -> Result<Vec<Item>, Failure> {
                 title: item.get("title").and_then(Value::as_str).unwrap_or("").trim().to_owned(),
                 kind: Kind::parse(item.get("item_type").and_then(Value::as_str).unwrap_or("")),
                 vault: vault.to_owned(),
+                username: ["username", "email"]
+                    .iter()
+                    .find_map(|key| item.get(*key).and_then(Value::as_str))
+                    .unwrap_or("")
+                    .trim()
+                    .to_owned(),
             })
         })
         .collect())
@@ -356,7 +395,7 @@ fn binary() -> Result<PathBuf, String> {
     BINARY.get_or_init(|| spotty_proton_pass_embedded::install(&cache_root())).clone()
 }
 
-fn command() -> Result<Command, String> {
+pub(crate) fn command() -> Result<Command, String> {
     let binary = binary()?;
     let session = session_dir();
     crate::security::private_dir(&session).map_err(|e| e.to_string())?;
@@ -519,8 +558,8 @@ fn read_field(target: &str, names: &[&str]) -> Result<Output, Failure> {
 static COPY_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Put `secret` on the clipboard marked as a password, and clear it again
-/// after [`CLEAR_CLIPBOARD_SECS`] if it is still there. GTK main thread only.
-fn copy_secret(secret: &str) {
+/// after [`clear_after_secs`] if it is still there. GTK main thread only.
+pub(crate) fn copy_secret(secret: &str) {
     use gtk::prelude::*;
     let Some(display) = gdk::Display::default() else { return };
     let clipboard = display.clipboard();
@@ -531,7 +570,7 @@ fn copy_secret(secret: &str) {
         return;
     }
     let generation = COPY_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    glib::timeout_add_seconds_local_once(CLEAR_CLIPBOARD_SECS, move || {
+    glib::timeout_add_seconds_local_once(clear_after_secs(), move || {
         // A later copy (ours or anyone's) must not be wiped.
         if COPY_GENERATION.load(Ordering::SeqCst) == generation && clipboard.is_local() {
             let _ = clipboard.set_content(None::<&gdk::ContentProvider>);
@@ -539,7 +578,25 @@ fn copy_secret(secret: &str) {
     });
 }
 
-fn notify(title: &str, body: &str) {
+/// Tell a value of an open item was copied (the search preview's copy buttons).
+/// The caller has checked the PIN. GTK main thread only.
+pub(crate) fn copy_value(label: &str, title: &str, secret: &str) {
+    copy_secret(secret);
+    notify(
+        &crate::i18n::gettext("{field} copied").replace("{field}", label),
+        &crate::i18n::gettext("{title} · clears from the clipboard in {seconds} s")
+            .replace("{title}", title)
+            .replace("{seconds}", &clear_after_secs().to_string()),
+    );
+}
+
+/// A clipboard value Spotty sets now replaces any copy whose clear is still
+/// due: that old timer must not clear the new value.
+pub(crate) fn supersede_copy_clear() {
+    COPY_GENERATION.fetch_add(1, Ordering::SeqCst);
+}
+
+pub(crate) fn notify(title: &str, body: &str) {
     let (title, body) = (title.to_owned(), body.to_owned());
     glib::MainContext::default().invoke(move || {
         if let Some(app) = gio::Application::default() {
@@ -583,13 +640,13 @@ pub fn copy_field(field: Field, target: &str) {
                     &gettext("{field} copied").replace("{field}", &field.label()),
                     &gettext("{title} · clears from the clipboard in {seconds} s")
                         .replace("{title}", &title)
-                        .replace("{seconds}", &CLEAR_CLIPBOARD_SECS.to_string()),
+                        .replace("{seconds}", &clear_after_secs().to_string()),
                 );
             }
             Err(Failure::SignedOut) => {
                 mark_signed_out();
                 notify(&gettext("Proton Pass"), &gettext("Sign in to Proton Pass first. Opening the sign-in…"));
-                sign_in();
+                show_sign_in();
             }
             Err(Failure::Other(message)) => notify(&gettext("Proton Pass"), &format!("{title}: {message}")),
         }
@@ -621,7 +678,7 @@ pub fn open_website(target: &str) {
             }
             Err(Failure::SignedOut) => {
                 mark_signed_out();
-                sign_in();
+                show_sign_in();
             }
             Err(Failure::Other(message)) => notify(&gettext("Proton Pass"), &message),
         }
@@ -629,8 +686,6 @@ pub fn open_website(target: &str) {
 }
 
 // ── Signing in and out ──────────────────────────────────────────────────────
-
-static SIGN_IN: Mutex<Option<Child>> = Mutex::new(None);
 
 fn mark_signed_out() {
     let mut cache = cache();
@@ -642,97 +697,17 @@ fn mark_signed_out() {
     notify_ui();
 }
 
-/// Sign in to Proton Pass. The client prints a Proton approval link; Spotty
-/// approves it with the native Proton session, and the client finishes by
-/// itself. Without a native session the link is not opened: the Proton account
-/// window opens instead, and Pass signs in once that sign-in is done.
-pub fn sign_in() {
-    if !available() {
-        return;
-    }
-    std::thread::spawn(|| {
-        use crate::i18n::gettext;
-        let _signing = crate::proton_session::SigningIn::start("proton-pass");
-        if let Some(mut earlier) = SIGN_IN.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            let _ = earlier.kill();
-            let _ = earlier.wait();
-        }
-        let spawned = command().and_then(|mut command| {
-            command.arg("login").stdout(Stdio::piped()).stderr(Stdio::piped());
-            command.spawn().map_err(|e| format!("Couldn't start the Proton Pass client: {e}"))
-        });
-        let mut child = match spawned {
-            Ok(child) => child,
-            Err(message) => return notify(&gettext("Proton Pass"), &message),
-        };
-        let Some(stdout) = child.stdout.take() else { return };
-        if let Some(mut stderr) = child.stderr.take() {
-            // Drain it so the client never blocks on a full pipe.
-            std::thread::spawn(move || {
-                let _ = std::io::copy(&mut stderr, &mut std::io::sink());
-            });
-        }
-        *SIGN_IN.lock().unwrap_or_else(|p| p.into_inner()) = Some(child);
-
-        // Watchdog: a sign-in nobody completes must not linger.
-        std::thread::spawn(|| {
-            std::thread::sleep(SIGN_IN_WAIT);
-            if let Some(mut stale) = SIGN_IN.lock().unwrap_or_else(|p| p.into_inner()).take() {
-                let _ = stale.kill();
-                let _ = stale.wait();
-            }
-        });
-
-        // Ends this sign-in: nothing more can come of it.
-        let stop = || {
-            let child = SIGN_IN.lock().unwrap_or_else(|p| p.into_inner()).take();
-            if let Some(mut child) = child {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        };
-        let mut opened = false;
-        let mut success = false;
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let line = line.trim();
-            if !opened && line.starts_with("https://") {
-                opened = true;
-                // The link carries a key for the client: it is read here and
-                // never shown or logged.
-                let Some(login) = spotty_proton_account::parse_pass_login_url(line) else {
-                    notify(&gettext("Proton Pass"), &gettext("Proton Pass asked to sign in in a form Spotty doesn't know. Try again."));
-                    stop();
-                    break;
-                };
-                match crate::proton_native::client() {
-                    Some(client) => {
-                        if let Err(error) = client.approve_pass_login(&login) {
-                            notify(&gettext("Proton Pass"), &gettext("Couldn't sign in to Proton Pass: {error}").replace("{error}", &error.to_string()));
-                            stop();
-                            break;
-                        }
-                    }
-                    None => {
-                        // Not signed in to Proton in Spotty: sign in there first.
-                        // Pass starts again once that is done (share_sign_in).
-                        stop();
-                        glib::MainContext::default().invoke(|| crate::ui::proton_native_ui::open_account_window(None));
-                        break;
-                    }
-                }
-            } else if line.starts_with("Successfully logged in") {
-                success = true;
-            }
-        }
-        if let Some(mut done) = SIGN_IN.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            let _ = done.wait();
-        }
-        if success {
-            notify(&gettext("Proton Pass"), &gettext("Signed in. Your vault is ready to search."));
-            refresh();
-            load_account();
-        }
+/// Open the Proton Pass settings, where the sign-in page is.
+pub fn show_sign_in() {
+    glib::MainContext::default().invoke(|| {
+        crate::ui::settings_window::show_proton_service_settings_for(None, "proton-pass");
     });
+}
+
+/// After a sign-in in `proton_pass_login` succeeded: load the vault and the account.
+pub fn signed_in_now() {
+    refresh();
+    load_account();
 }
 
 /// Read the signed-in account's email from `info`.
@@ -750,16 +725,22 @@ fn load_account() {
     });
 }
 
-/// Sign out and forget the vault listing and the local session.
+/// Remove a session the client holds but isn't signed in with ("Session is some
+/// but is not logged in"), so a new sign-in can start. Blocks.
+pub(crate) fn clear_unfinished_session() {
+    if session_dir().exists() && run(&["info"], SHORT).is_err() {
+        let _ = run(&["logout", "--force"], SHORT);
+    }
+}
+
+/// Sign out and forget the vault listing and the local session. Only Proton
+/// Pass's own session is touched.
 pub fn sign_out() {
     if !available() {
         return;
     }
     std::thread::spawn(|| {
-        if let Some(mut pending) = SIGN_IN.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            let _ = pending.kill();
-            let _ = pending.wait();
-        }
+        crate::proton_pass_login::cancel();
         // Never signed in here: nothing to remove, and no reason to unpack the
         // client just to say so.
         if session_dir().exists() {
@@ -767,6 +748,34 @@ pub fn sign_out() {
         }
         mark_signed_out();
     });
+}
+
+// ── The vault window's reads ────────────────────────────────────────────────
+
+/// Read one item, every field, for the vault window. Runs on a worker thread.
+/// The caller keeps the result only while the item is on screen.
+pub fn view_item(target: &str) -> Result<crate::proton_pass_item::Detail, String> {
+    let (share, item) = valid_target(target).ok_or_else(|| "That Proton Pass item is no longer valid.".to_owned())?;
+    let share = format!("--share-id={share}");
+    let item = format!("--item-id={item}");
+    let out = run(&["item", "view", &share, &item, "--output", "json"], SHORT)?;
+    let text = zeroizing(out.text());
+    crate::proton_pass_item::parse(&text).map_err(|e| e.to_string())
+}
+
+/// The current one-time code of an item. Runs on a worker thread; the code
+/// is for the moment it is shown or copied.
+pub fn totp_now(target: &str) -> Result<spotty_proton_account::Zeroizing<String>, String> {
+    let (share, item) = valid_target(target).ok_or_else(|| "That Proton Pass item is no longer valid.".to_owned())?;
+    let share = format!("--share-id={share}");
+    let item = format!("--item-id={item}");
+    let out = run(&["item", "totp", &share, &item, "--output", "json"], SHORT)?;
+    let text = zeroizing(out.text());
+    crate::proton_pass_item::totp_code(&text).ok_or_else(|| "Proton Pass gave no one-time code for this item.".to_owned())
+}
+
+fn zeroizing(text: String) -> spotty_proton_account::Zeroizing<String> {
+    spotty_proton_account::Zeroizing::new(text)
 }
 
 /// Run a `pass` trigger row. Everything happens in the background; the
@@ -786,16 +795,31 @@ pub fn run_search_action(op: &str, target: &str) {
     }
     match op {
         "unlock" => {}
-        "signin" => sign_in(),
+        "signin" => show_sign_in(),
+        "open" => glib::MainContext::default().invoke(|| crate::ui::proton_pass_ui::open_vault(None)),
         "signout" => sign_out(),
         "refresh" => refresh(),
         "website" => open_website(target),
+        "sequence" => start_paste_sequence(target),
         other => {
             if let Some(field) = Field::parse(other) {
                 copy_field(field, target);
             }
         }
     }
+}
+
+/// Copy all of a login, one paste at a time (see `ui/proton_pass_paste.rs`).
+/// The item is read off the GTK thread; the sequence starts on it.
+fn start_paste_sequence(target: &str) {
+    let target = target.to_owned();
+    crate::ui::proton_native_ui::run(
+        move || view_item(&target).map(|detail| (target.clone(), detail)),
+        |result| match result {
+            Ok((target, detail)) => crate::ui::proton_pass_paste::start(crate::proton_pass_item::login_values(&detail, &target)),
+            Err(message) => notify(&crate::i18n::gettext("Proton Pass"), &message),
+        },
+    );
 }
 
 /// Learn whether a session exists (for the settings window) without listing.

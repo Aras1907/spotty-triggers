@@ -1,19 +1,144 @@
 use crate::rpc::{self, LoginMethod};
 use crate::session::{self, Command, Step, Update};
 mod window;
-use std::sync::mpsc;
+use spotty_proton_login as login;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 use zeroize::{Zeroize, Zeroizing};
+
+/// How long the shared sign-in page waits for Bridge to answer one step.
+const LOGIN_WAIT: Duration = Duration::from_secs(120);
+
+/// What Bridge's login stream reported for the step the page is on.
+enum LoginAnswer {
+    Step(Step),
+    Failed { step: Step, message: String },
+}
+
+/// The link between the shared sign-in page and Bridge's login stream. The
+/// window reads the stream on the GTK thread (`LoginWindow::poll`) and passes
+/// each login answer here; the page's backend calls (on a worker thread) send
+/// their command and wait for the answer.
+pub(crate) struct BridgeLink {
+    commands: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Command>>>,
+    /// The account the pending login is for. Bridge's cancel needs it.
+    account: Mutex<String>,
+    answers_tx: mpsc::Sender<LoginAnswer>,
+    answers_rx: Mutex<mpsc::Receiver<LoginAnswer>>,
+}
+
+impl BridgeLink {
+    fn new() -> Arc<Self> {
+        let (answers_tx, answers_rx) = mpsc::channel();
+        Arc::new(Self {
+            commands: Mutex::new(None),
+            account: Mutex::new(String::new()),
+            answers_tx,
+            answers_rx: Mutex::new(answers_rx),
+        })
+    }
+
+    fn set_commands(&self, commands: Option<tokio::sync::mpsc::UnboundedSender<Command>>) {
+        *self.commands.lock().unwrap_or_else(|p| p.into_inner()) = commands;
+    }
+
+    fn answer(&self, answer: LoginAnswer) {
+        let _ = self.answers_tx.send(answer);
+    }
+
+    /// Send one login step to Bridge and wait for its answer.
+    fn attempt(&self, method: LoginMethod, account: String, secret: Zeroizing<String>) -> login::Step {
+        // Answers left over from an earlier step must not answer this one.
+        {
+            let answers = self.answers_rx.lock().unwrap_or_else(|p| p.into_inner());
+            while answers.try_recv().is_ok() {}
+        }
+        let sent = self
+            .commands
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .is_some_and(|sender| sender.send(Command::Login { method, username: account, secret }).is_ok());
+        if !sent {
+            return login::Step::Failed("Bridge is disconnected. Reconnect to continue.".into());
+        }
+        self.wait()
+    }
+
+    fn wait(&self) -> login::Step {
+        let answers = self.answers_rx.lock().unwrap_or_else(|p| p.into_inner());
+        loop {
+            match answers.recv_timeout(LOGIN_WAIT) {
+                // Cancelling a login reports the password step again; that is not an answer.
+                Ok(LoginAnswer::Step(Step::Password)) => continue,
+                Ok(LoginAnswer::Step(step)) => return map_step(step, None),
+                Ok(LoginAnswer::Failed { step, message }) => return map_step(step, Some(message)),
+                Err(_) => return login::Step::Failed("Bridge didn't answer. Try again.".into()),
+            }
+        }
+    }
+
+    fn account(&self) -> String {
+        self.account.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+}
+
+/// What a Bridge login step means on the shared sign-in page. An error message
+/// keeps the page on its step.
+fn map_step(step: Step, error: Option<String>) -> login::Step {
+    if let Some(message) = error {
+        return login::Step::Failed(message);
+    }
+    match step {
+        Step::Finished => login::Step::Done,
+        Step::TwoFactor | Step::FactorChoice => login::Step::TwoFactor,
+        Step::MailboxPassword => login::Step::SecondPassword {
+            title: "Mailbox password".into(),
+            label: "Mailbox password".into(),
+        },
+        Step::SecurityKey | Step::KeyPin | Step::TouchKey => login::Step::Failed(
+            "This account needs a security key. Spotty can't use one to sign in yet; use an authenticator code.".into(),
+        ),
+        Step::Recovery => login::Step::Failed(
+            "Proton requires human verification. Follow the recovery steps for your Proton account, then retry sign-in.".into(),
+        ),
+        Step::Password => login::Step::Failed("Enter your Proton Mail username and password.".into()),
+    }
+}
+
+/// Bridge's own sign-in, as the shared sign-in page calls it.
+pub(crate) struct BridgeLogin(Arc<BridgeLink>);
+
+impl login::Backend for BridgeLogin {
+    fn begin(&self, email: &str, password: Zeroizing<String>) -> login::Step {
+        let account = email.trim().to_owned();
+        *self.0.account.lock().unwrap_or_else(|p| p.into_inner()) = account.clone();
+        self.0.attempt(LoginMethod::Password, account, password)
+    }
+
+    fn submit_code(&self, code: Zeroizing<String>) -> login::Step {
+        self.0.attempt(LoginMethod::TwoFactor, self.0.account(), code)
+    }
+
+    fn submit_second(&self, password: Zeroizing<String>) -> login::Step {
+        self.0.attempt(LoginMethod::MailboxPassword, self.0.account(), password)
+    }
+
+    fn cancel(&self) {
+        let account = std::mem::take(&mut *self.0.account.lock().unwrap_or_else(|p| p.into_inner()));
+        if let Some(sender) = self.0.commands.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+            let _ = sender.send(Command::Cancel(account));
+        }
+    }
+}
 
 struct LoginWindow {
     runtime: Option<tokio::runtime::Runtime>,
     commands: Option<tokio::sync::mpsc::UnboundedSender<Command>>,
     updates: mpsc::Receiver<Update>,
     username: String,
-    password: Zeroizing<String>,
-    code: Zeroizing<String>,
-    mailbox: Zeroizing<String>,
-    pin: Zeroizing<String>,
+    /// The link to the shared sign-in page (see `BridgeLogin`).
+    link: Arc<BridgeLink>,
     step: Step,
     message: String,
     accounts: Vec<(String, String, i32)>,
@@ -29,7 +154,6 @@ struct LoginWindow {
     start_pending: Option<std::time::Instant>,
     preparing: Option<mpsc::Receiver<Result<(), String>>>,
     connecting_since: Option<std::time::Instant>,
-    secrets_revision: u64,
     mail_revision: u64,
     embedded: bool,
 }
@@ -48,10 +172,7 @@ impl LoginWindow {
             commands: None,
             updates,
             username: String::new(),
-            password: Zeroizing::new(String::new()),
-            code: Zeroizing::new(String::new()),
-            mailbox: Zeroizing::new(String::new()),
-            pin: Zeroizing::new(String::new()),
+            link: BridgeLink::new(),
             step: Step::Password,
             message: "Connecting to Proton Mail Bridge…".into(),
             accounts: Vec::new(),
@@ -67,7 +188,6 @@ impl LoginWindow {
             start_pending: None,
             preparing: None,
             connecting_since: None,
-            secrets_revision: 0,
             mail_revision: 0,
             embedded: false,
         }
@@ -99,6 +219,7 @@ impl LoginWindow {
         let (commands, receiver) = tokio::sync::mpsc::unbounded_channel();
         let (updates, update_receiver) = mpsc::channel();
         self.updates = update_receiver;
+        self.link.set_commands(Some(commands.clone()));
         self.commands = Some(commands);
         self.message = "Connecting to Proton Mail Bridge…".into();
         self.ready = false;
@@ -115,14 +236,6 @@ impl LoginWindow {
             });
     }
 
-    fn clear_secrets(&mut self) {
-        self.secrets_revision += 1;
-        self.password.zeroize();
-        self.code.zeroize();
-        self.mailbox.zeroize();
-        self.pin.zeroize();
-    }
-
     fn send(&mut self, command: Command) {
         if self
             .commands
@@ -134,35 +247,10 @@ impl LoginWindow {
         }
     }
 
-    fn submit(&mut self, method: LoginMethod) {
-        let secret = Zeroizing::new(match method {
-            LoginMethod::Password => std::mem::take(&mut *self.password),
-            LoginMethod::TwoFactor => std::mem::take(&mut *self.code),
-            LoginMethod::MailboxPassword => std::mem::take(&mut *self.mailbox),
-            LoginMethod::SecurityKey => std::mem::take(&mut *self.pin),
-        });
-        if self.username.trim().is_empty()
-            || (secret.is_empty() && method != LoginMethod::SecurityKey)
-        {
-            self.message = "Enter the required sign-in details.".into();
-            return;
-        }
-        self.mail_settings = None;
-        self.settings_retry_id = None;
-        self.busy = true;
-        self.message = "Waiting for Proton Mail Bridge…".into();
-        self.send(Command::Login {
-            method,
-            username: self.username.trim().to_owned(),
-            secret,
-        });
-    }
-
     fn logout(&mut self, account_id: String) {
         self.mail_settings = None;
         self.settings_retry_id = None;
         self.mail_revision += 1;
-        self.clear_secrets();
         self.busy = true;
         self.message = "Signing out and disconnecting mail clients…".into();
         self.send(Command::Logout(account_id));
@@ -198,8 +286,8 @@ impl LoginWindow {
                 }
                 Update::Step(step) => {
                     self.step = step;
+                    self.link.answer(LoginAnswer::Step(step));
                     self.busy = false;
-                    self.clear_secrets();
                     self.message = match step {
                         Step::TwoFactor | Step::FactorChoice => {
                             "Verify with your authenticator code or security key."
@@ -220,12 +308,12 @@ impl LoginWindow {
                 }
                 Update::Error { step, message } => {
                     self.step = step;
+                    self.link.answer(LoginAnswer::Failed { step, message: message.clone() });
                     self.message = message;
                     self.mail_settings = None;
                     self.settings_retry_id = None;
                     self.busy = false;
                     self.connecting_since = None;
-                    self.clear_secrets();
                 }
                 Update::MailSettings(settings) => {
                     self.mail_revision += 1;
@@ -244,7 +332,6 @@ impl LoginWindow {
                     self.settings_retry_id = None;
                     self.step = Step::Finished;
                     self.busy = false;
-                    self.clear_secrets();
                     self.message = "Connected to Proton Mail.".into();
                 }
                 Update::AccountSettingsFailed {
@@ -269,7 +356,6 @@ impl LoginWindow {
                     self.settings_retry_id = (self.step == Step::Finished).then_some(id);
                     self.mail_settings = None;
                     self.busy = false;
-                    self.clear_secrets();
                     self.message = message;
                 }
                 Update::LoggedOut { accounts } => {
@@ -279,7 +365,6 @@ impl LoginWindow {
                     self.accounts = accounts;
                     self.step = Step::Password;
                     self.busy = false;
-                    self.clear_secrets();
                     self.message = "Signed out of Proton Mail Bridge.".into();
                 }
                 Update::Autostart(value) => {
@@ -305,7 +390,6 @@ impl LoginWindow {
                     self.ready = false;
                     self.busy = false;
                     self.connecting_since = None;
-                    self.clear_secrets();
                     if self.closing {
                         self.close_finished = true;
                     }
@@ -324,7 +408,6 @@ impl LoginWindow {
         self.connecting_since = None;
         self.mail_settings = None;
         self.settings_retry_id = None;
-        self.clear_secrets();
         if self.commands.is_none() {
             self.close_finished = true;
         } else {
@@ -491,23 +574,51 @@ impl EmbeddedBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use login::Backend;
 
     #[test]
-    fn submission_clears_gui_buffer_and_sends_only_to_local_worker() {
-        let mut window = LoginWindow::unconnected();
+    fn a_login_step_is_sent_to_bridge_with_its_secret_and_answered_by_the_stream() {
+        let link = BridgeLink::new();
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        window.commands = Some(sender);
-        window.username = "test@proton.me".into();
-        window.password = Zeroizing::new("test-password".into());
-        window.submit(LoginMethod::Password);
-        assert!(window.password.is_empty());
-        assert!(
-            matches!(receiver.try_recv().unwrap(), Command::Login { method: LoginMethod::Password, secret, .. } if *secret == "test-password")
-        );
-        window.code = Zeroizing::new("012345".into());
-        window.begin_close();
-        assert!(window.code.is_empty());
-        assert!(matches!(receiver.try_recv().unwrap(), Command::Close));
+        link.set_commands(Some(sender));
+        let worker = link.clone();
+        let answer = std::thread::spawn(move || {
+            BridgeLogin(worker).begin("test@proton.me", Zeroizing::new("test-password".into()))
+        });
+        let command = receiver.blocking_recv().expect("the login is sent");
+        assert!(matches!(&command, Command::Login { method: LoginMethod::Password, username, secret } if username == "test@proton.me" && **secret == "test-password"));
+        link.answer(LoginAnswer::Step(Step::TwoFactor));
+        assert_eq!(answer.join().unwrap(), login::Step::TwoFactor);
+    }
+
+    #[test]
+    fn bridge_steps_map_onto_the_shared_page() {
+        assert_eq!(map_step(Step::Finished, None), login::Step::Done);
+        assert_eq!(map_step(Step::TwoFactor, None), login::Step::TwoFactor);
+        assert_eq!(map_step(Step::FactorChoice, None), login::Step::TwoFactor);
+        assert!(matches!(map_step(Step::MailboxPassword, None), login::Step::SecondPassword { .. }));
+        assert!(matches!(map_step(Step::KeyPin, None), login::Step::Failed(_)));
+        assert!(matches!(map_step(Step::TouchKey, None), login::Step::Failed(_)));
+        assert_eq!(map_step(Step::TwoFactor, Some("The two-factor code was rejected.".into())), login::Step::Failed("The two-factor code was rejected.".into()));
+    }
+
+    #[test]
+    fn a_stale_or_cancel_answer_does_not_end_a_login() {
+        let link = BridgeLink::new();
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        link.set_commands(Some(sender));
+        link.answer(LoginAnswer::Step(Step::Password));
+        link.answer(LoginAnswer::Step(Step::Finished));
+        assert_eq!(link.wait(), login::Step::Done);
+    }
+
+    #[test]
+    fn submission_is_refused_when_bridge_is_not_connected() {
+        let link = BridgeLink::new();
+        assert!(matches!(
+            BridgeLogin(link).begin("test@proton.me", Zeroizing::new("x".into())),
+            login::Step::Failed(message) if message.contains("disconnected")
+        ));
     }
 
     #[test]
@@ -543,17 +654,13 @@ mod tests {
     }
 
     #[test]
-    fn logout_clears_generated_and_login_secrets_before_sending_command() {
+    fn logout_clears_generated_secrets_before_sending_command() {
         let mut window = LoginWindow::unconnected();
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         window.commands = Some(sender);
         let (updates, update_receiver) = mpsc::channel();
         window.updates = update_receiver;
         window.ready = true;
-        window.password = Zeroizing::new("account-secret".into());
-        window.code = Zeroizing::new("verification-secret".into());
-        window.mailbox = Zeroizing::new("mailbox-secret".into());
-        window.pin = Zeroizing::new("pin-secret".into());
         window.mail_settings = Some(session::MailSettings {
             id: "account-id".into(),
             username: "test@proton.me".into(),
@@ -566,10 +673,6 @@ mod tests {
             smtp_ssl: true,
         });
         window.logout("account-id".into());
-        assert!(window.password.is_empty());
-        assert!(window.code.is_empty());
-        assert!(window.mailbox.is_empty());
-        assert!(window.pin.is_empty());
         assert!(window.mail_settings.is_none());
         assert!(window.busy);
         assert!(matches!(receiver.try_recv().unwrap(), Command::Logout(id) if id == "account-id"));
@@ -591,7 +694,6 @@ mod tests {
         window.commands = Some(sender);
         window.username = "test@proton.me".into();
         window.accounts = vec![("account-id".into(), "test@proton.me".into(), 2)];
-        window.password = Zeroizing::new("account-secret".into());
         window.mail_settings = Some(session::MailSettings {
             id: "account-id".into(),
             username: "test@proton.me".into(),
@@ -608,7 +710,6 @@ mod tests {
 
         assert!(window.username.is_empty());
         assert!(window.accounts.is_empty());
-        assert!(window.password.is_empty());
         assert!(window.mail_settings.is_none());
         assert!(!window.close_finished);
         assert!(matches!(receiver.try_recv(), Ok(Command::Close)));

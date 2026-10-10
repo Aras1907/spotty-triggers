@@ -12,6 +12,14 @@ use nucleo_matcher::{Matcher, Utf32String};
 const MAX_ITEMS: usize = 8;
 const TOP: i32 = 200_000;
 
+/// Score tiers: a title match ranks above a username match, which ranks above a
+/// vault or item-kind match, which ranks above words spread over several fields.
+/// Inside the title tier the title's own score decides.
+const TITLE_TIER: i32 = 3_000_000;
+const USERNAME_TIER: i32 = 2_000_000;
+const META_TIER: i32 = 1_000_000;
+const SPREAD_TIER: i32 = 100_000;
+
 fn pass_row(title: String, subtitle: String, icon: &str, op: &str, target: &str, score: i32) -> SearchResult {
     SearchResult {
         kind: ResultKind::System,
@@ -23,8 +31,8 @@ fn pass_row(title: String, subtitle: String, icon: &str, op: &str, target: &str,
     }
 }
 
-/// How well `item` matches the lower-cased `needle`: higher is better, 0 none.
-fn rank(needle: &str, pattern: &Pattern, matcher: &mut Matcher, item: &Item) -> i32 {
+/// How well the item's title matches the lower-cased `needle`: 0 none.
+fn title_rank(needle: &str, pattern: &Pattern, matcher: &mut Matcher, item: &Item) -> i32 {
     let title = item.title.to_lowercase();
     if title == needle {
         return 10_000;
@@ -46,8 +54,63 @@ fn rank(needle: &str, pattern: &Pattern, matcher: &mut Matcher, item: &Item) -> 
     0
 }
 
-fn item_subtitle(item: &Item, hint: &str) -> String {
-    let kind = match item.kind {
+/// The item's kind as words to match: its English and translated names.
+fn kind_words(kind: Kind) -> String {
+    let english = match kind {
+        Kind::Login => "login password",
+        Kind::Note => "note",
+        Kind::Alias => "alias email",
+        Kind::CreditCard => "card credit",
+        Kind::Identity => "identity",
+        Kind::SshKey => "ssh key",
+        Kind::Wifi => "wifi wi-fi network",
+        Kind::Custom => "item",
+    };
+    format!("{english} {}", kind_name(kind)).to_lowercase()
+}
+
+/// How well `item` matches the lower-cased `needle`, across its title, username,
+/// vault and kind. Every word of the search must appear in the same field
+/// group (or, for the last tier, anywhere in the item). Higher is better; 0 none.
+fn rank(needle: &str, pattern: &Pattern, matcher: &mut Matcher, item: &Item) -> i32 {
+    let title = title_rank(needle, pattern, matcher, item);
+    if title > 0 {
+        return TITLE_TIER + title;
+    }
+    let words: Vec<&str> = needle.split_whitespace().collect();
+    if words.is_empty() {
+        return 0;
+    }
+    let contains_all = |haystack: &str| words.iter().all(|word| haystack.contains(*word));
+    let username = item.username.to_lowercase();
+    if !username.is_empty() && contains_all(&username) {
+        return USERNAME_TIER + 1_000;
+    }
+    let meta = format!("{} {}", item.vault, kind_words(item.kind)).to_lowercase();
+    if contains_all(&meta) {
+        return META_TIER;
+    }
+    let everything = format!("{} {} {meta}", item.title, username).to_lowercase();
+    if contains_all(&everything) {
+        return SPREAD_TIER;
+    }
+    0
+}
+
+/// Rows for the vault window, shown with the trigger: opens it.
+fn open_row(score: i32) -> SearchResult {
+    pass_row(
+        gettext("Open Proton Pass vault"),
+        gettext("Browse, view and copy items in a window"),
+        "dialog-password-symbolic",
+        "open",
+        "",
+        score,
+    )
+}
+
+fn kind_name(kind: Kind) -> String {
+    match kind {
         Kind::Login => gettext("Login"),
         Kind::Note => gettext("Note"),
         Kind::Alias => gettext("Alias"),
@@ -56,8 +119,15 @@ fn item_subtitle(item: &Item, hint: &str) -> String {
         Kind::SshKey => gettext("SSH key"),
         Kind::Wifi => gettext("Wi-Fi"),
         Kind::Custom => gettext("Item"),
-    };
-    let place = if item.vault.is_empty() { kind } else { format!("{kind} · {}", item.vault) };
+    }
+}
+
+fn item_subtitle(item: &Item, hint: &str) -> String {
+    let kind = kind_name(item.kind);
+    let mut place = if item.vault.is_empty() { kind } else { format!("{kind} · {}", item.vault) };
+    if crate::proton_pass_settings::get().show_username && !item.username.is_empty() {
+        place = format!("{} · {place}", item.username);
+    }
     if hint.is_empty() { place } else { format!("{place} — {hint}") }
 }
 
@@ -73,7 +143,15 @@ fn item_rows(item: &Item, score: i32, expand: bool) -> Vec<SearchResult> {
             if expand {
                 rows.push(pass_row(gettext("Copy username"), title.clone(), "avatar-default-symbolic", "username", &target, score - 1));
                 rows.push(pass_row(gettext("Copy one-time code"), title.clone(), "appointment-soon-symbolic", "totp", &target, score - 2));
-                rows.push(pass_row(gettext("Open website"), title, "web-browser-symbolic", "website", &target, score - 3));
+                rows.push(pass_row(gettext("Open website"), title.clone(), "web-browser-symbolic", "website", &target, score - 3));
+                rows.push(pass_row(
+                    gettext("Copy username, password and code"),
+                    format!("{title} · {}", gettext("paste one after another")),
+                    "edit-copy-symbolic",
+                    "sequence",
+                    &target,
+                    score - 4,
+                ));
             }
         }
         Kind::CreditCard => {
@@ -133,14 +211,10 @@ pub fn search(query: &str) -> Vec<SearchResult> {
     proton_pass::ensure_loaded();
     let needle = query.trim().to_lowercase();
     proton_pass::with_items(|state, items| match state {
-        State::SignedOut => {
-            let subtitle = if crate::proton_native::signed_in() {
-                gettext("Uses your Proton account in Spotty — nothing to type")
-            } else {
-                gettext("Sign in once with your Proton account")
-            };
-            vec![message_row(gettext("Sign in to Proton Pass"), subtitle, "signin", TOP)]
-        }
+        State::SignedOut => vec![
+            message_row(gettext("Sign in to Proton Pass"), gettext("Type your Proton email and password in the Proton Pass settings"), "signin", TOP),
+            open_row(TOP - 1),
+        ],
         State::Failed(message) => vec![
             message_row(gettext("Proton Pass isn't available right now"), message.clone(), "", TOP),
             message_row(gettext("Try again"), gettext("Reload your vault"), "refresh", TOP - 1),
@@ -156,18 +230,29 @@ pub fn search(query: &str) -> Vec<SearchResult> {
 }
 
 fn ready_rows(needle: &str, items: &[Item]) -> Vec<SearchResult> {
+    let settings = crate::proton_pass_settings::get();
     let mut rows = Vec::new();
-    if needle.is_empty() {
+    if !settings.search_titles {
+        // Titles are not searched at all; the window is the way in.
+        rows.push(message_row(
+            gettext("Item titles aren't searched"),
+            gettext("Turn this on in the Proton Pass settings, or open the vault window"),
+            "",
+            TOP,
+        ));
+        rows.push(open_row(TOP - 1));
+    } else if needle.is_empty() {
         rows.push(message_row(
             gettext("Search your Proton Pass vault"),
             gettext("{count} items — type a title; Enter copies the password, which clears after {seconds} s")
                 .replace("{count}", &items.len().to_string())
-                .replace("{seconds}", &proton_pass::CLEAR_CLIPBOARD_SECS.to_string()),
+                .replace("{seconds}", &proton_pass::clear_after_secs().to_string()),
             "",
             TOP,
         ));
+        rows.push(open_row(TOP - 1));
         for (i, item) in items.iter().take(MAX_ITEMS).enumerate() {
-            rows.extend(item_rows(item, TOP - 100 * (i as i32 + 1), false));
+            rows.extend(item_rows(item, TOP - 100 * (i as i32 + 2), false));
         }
     } else {
         let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
@@ -200,7 +285,7 @@ mod tests {
     use super::*;
 
     fn item(id: &str, title: &str, kind: Kind) -> Item {
-        Item { share_id: "s1".into(), item_id: id.into(), title: title.into(), kind, vault: "Personal".into() }
+        Item { share_id: "s1".into(), item_id: id.into(), title: title.into(), kind, vault: "Personal".into(), username: String::new() }
     }
 
     fn titles(rows: &[SearchResult]) -> Vec<String> {
@@ -240,12 +325,56 @@ mod tests {
         assert!(matches!(&alias[0].action, Action::Noop));
     }
 
+    fn item_with(id: &str, title: &str, kind: Kind, vault: &str, username: &str) -> Item {
+        Item { share_id: "s1".into(), item_id: id.into(), title: title.into(), kind, vault: vault.into(), username: username.into() }
+    }
+
+    #[test]
+    fn proton_pass_search_ranks_title_then_username_then_vault() {
+        let items = [
+            item_with("1", "Bank", Kind::Login, "Personal", ""),
+            item_with("2", "Shop", Kind::Login, "Work", "personal@example.test"),
+            item_with("3", "Personal log", Kind::Login, "Work", ""),
+        ];
+        let rows = ready_rows("personal", &items);
+        let logins: Vec<String> = rows
+            .iter()
+            .filter(|row| matches!(&row.action, Action::ProtonPass { op, .. } if op == "password"))
+            .map(|row| row.title.clone())
+            .collect();
+        assert_eq!(logins, vec!["Personal log", "Shop", "Bank"]);
+    }
+
+    #[test]
+    fn proton_pass_search_matches_vault_kind_and_words_across_fields() {
+        let items = [
+            item_with("1", "Visa", Kind::CreditCard, "Finance", ""),
+            item_with("2", "GitHub", Kind::Login, "Personal", ""),
+        ];
+        // The kind's name and the vault's name are searchable.
+        assert_eq!(ready_rows("card", &items)[0].title, "Visa");
+        assert_eq!(ready_rows("finance", &items)[0].title, "Visa");
+        // Words may come from different fields, as long as each word is found.
+        assert_eq!(ready_rows("github personal", &items)[0].title, "GitHub");
+        assert!(ready_rows("github finance", &items).iter().all(|row| row.title != "GitHub"));
+    }
+
+    #[test]
+    fn proton_pass_login_rows_offer_copy_all_for_the_best_match() {
+        let items = [item("1", "GitHub", Kind::Login)];
+        let rows = ready_rows("github", &items);
+        assert!(rows.iter().any(|row| matches!(&row.action, Action::ProtonPass { op, target } if op == "sequence" && target == "s1/1")));
+        // Only the best match offers it; the bare title list does not.
+        let plain = ready_rows("", &items);
+        assert!(!plain.iter().any(|row| matches!(&row.action, Action::ProtonPass { op, .. } if op == "sequence")));
+    }
+
     #[test]
     fn empty_query_lists_a_few_titles_never_secrets() {
         let items: Vec<Item> = (0..20).map(|n| item(&n.to_string(), &format!("Site {n}"), Kind::Login)).collect();
         let rows = ready_rows("", &items);
-        // hint + 8 items
-        assert_eq!(rows.len(), 1 + MAX_ITEMS);
+        // hint, open row, then 8 items
+        assert_eq!(rows.len(), 2 + MAX_ITEMS);
         assert!(rows[0].subtitle.as_deref().unwrap_or("").contains("20 items"));
     }
 }

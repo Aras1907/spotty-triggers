@@ -1,43 +1,26 @@
 use super::*;
 use adw::prelude::*;
+use spotty_proton_login as login;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 type Model = Rc<RefCell<LoginWindow>>;
 
+/// The generated Bridge password the mail page shows. Cleared when that page changes.
 #[derive(Clone)]
 struct Secrets {
-    password: adw::PasswordEntryRow,
-    code: adw::PasswordEntryRow,
-    mailbox: adw::PasswordEntryRow,
-    pin: adw::PasswordEntryRow,
     generated: Rc<RefCell<Option<gtk::Entry>>>,
 }
 
 #[derive(Clone)]
 struct WeakSecrets {
-    password: glib::WeakRef<adw::PasswordEntryRow>,
-    code: glib::WeakRef<adw::PasswordEntryRow>,
-    mailbox: glib::WeakRef<adw::PasswordEntryRow>,
-    pin: glib::WeakRef<adw::PasswordEntryRow>,
     generated: std::rc::Weak<RefCell<Option<gtk::Entry>>>,
 }
 
 impl Secrets {
     fn downgrade(&self) -> WeakSecrets {
-        WeakSecrets {
-            password: self.password.downgrade(),
-            code: self.code.downgrade(),
-            mailbox: self.mailbox.downgrade(),
-            pin: self.pin.downgrade(),
-            generated: Rc::downgrade(&self.generated),
-        }
-    }
-
-    fn clear_login(&self) {
-        for row in [&self.password, &self.code, &self.mailbox, &self.pin] {
-            row.set_text("");
-        }
+        WeakSecrets { generated: Rc::downgrade(&self.generated) }
     }
 
     fn clear_generated(&self) {
@@ -45,22 +28,11 @@ impl Secrets {
             entry.set_text("");
         }
     }
-
-    fn clear_all(&self) {
-        self.clear_login();
-        self.clear_generated();
-    }
 }
 
 impl WeakSecrets {
     fn upgrade(&self) -> Option<Secrets> {
-        Some(Secrets {
-            password: self.password.upgrade()?,
-            code: self.code.upgrade()?,
-            mailbox: self.mailbox.upgrade()?,
-            pin: self.pin.upgrade()?,
-            generated: self.generated.upgrade()?,
-        })
+        Some(Secrets { generated: self.generated.upgrade()? })
     }
 }
 
@@ -68,7 +40,6 @@ impl WeakSecrets {
 struct Rendered {
     step: Option<Step>,
     ready: bool,
-    secrets_revision: u64,
     mail_revision: Option<u64>,
     mail_error: Option<(String, String)>,
     accounts: Vec<(String, String, i32)>,
@@ -83,87 +54,24 @@ struct Window {
     status: gtk::Label,
     spinner: gtk::Spinner,
     stack: gtk::Stack,
-    username: adw::EntryRow,
+    login: login::LoginPage,
     secrets: Secrets,
-    security_group: adw::PreferencesGroup,
-    security_button: gtk::Button,
-    factor_key: gtk::Button,
     mail: gtk::Box,
     accounts: adw::PreferencesGroup,
+    preferences: adw::PreferencesGroup,
     startup: adw::SwitchRow,
-    cancel: gtk::Button,
     recovery: gtk::Box,
     add_account: gtk::Button,
     close: gtk::Button,
     rendered: RefCell<Rendered>,
 }
 
-fn label(text: &str, style: &str) -> gtk::Label {
-    gtk::Label::builder()
-        .label(text)
-        .wrap(true)
-        .justify(gtk::Justification::Center)
-        .css_classes([style])
-        .build()
-}
-
-fn primary(text: &str) -> gtk::Button {
-    gtk::Button::builder()
-        .label(text)
-        .halign(gtk::Align::End)
-        .css_classes(["suggested-action", "pill"])
-        .build()
-}
-
-fn secret(title: &str) -> adw::PasswordEntryRow {
-    adw::PasswordEntryRow::builder()
-        .title(title)
-        .input_hints(gtk::InputHints::PRIVATE | gtk::InputHints::NO_SPELLCHECK)
-        .build()
-}
-
-fn form(title: &str, description: &str) -> (gtk::Box, adw::PreferencesGroup) {
-    let page = gtk::Box::new(gtk::Orientation::Vertical, 16);
-    let group = adw::PreferencesGroup::builder()
-        .title(title)
-        .description(description)
-        .build();
-    page.append(&group);
-    (page, group)
-}
-
-fn submit_action(
-    model: &Model,
-    username: &adw::EntryRow,
-    secrets: &Secrets,
-    method: LoginMethod,
-) -> impl Fn() + 'static {
-    let model = model.clone();
-    let username = username.downgrade();
-    let secrets = secrets.downgrade();
-    move || {
-        let (Some(username), Some(secrets)) = (username.upgrade(), secrets.upgrade()) else {
-            return;
-        };
-        let mut state = model.borrow_mut();
-        if !state.ready || state.busy || state.closing {
-            return;
-        }
-        if method == LoginMethod::Password {
-            state.username = username.text().to_string();
-        }
-        match method {
-            LoginMethod::Password => {
-                state.password = Zeroizing::new(secrets.password.text().to_string())
-            }
-            LoginMethod::TwoFactor => state.code = Zeroizing::new(secrets.code.text().to_string()),
-            LoginMethod::MailboxPassword => {
-                state.mailbox = Zeroizing::new(secrets.mailbox.text().to_string())
-            }
-            LoginMethod::SecurityKey => state.pin = Zeroizing::new(secrets.pin.text().to_string()),
-        }
-        state.submit(method);
-        secrets.clear_all();
+fn bridge_app() -> login::App {
+    login::App {
+        name: "Proton Mail Bridge".into(),
+        icon: "mail-send-symbolic".into(),
+        signup_url: "https://account.proton.me/signup".into(),
+        translate: |text| text.to_owned(),
     }
 }
 
@@ -174,12 +82,11 @@ fn request_account_settings(model: &Model, secrets: &WeakSecrets, account_id: St
     }
     state.mail_settings = None;
     state.settings_retry_id = None;
-    state.clear_secrets();
     state.busy = true;
     state.message = "Loading saved mail settings…".into();
     state.send(Command::ShowAccount(account_id));
     if let Some(secrets) = secrets.upgrade() {
-        secrets.clear_all();
+        secrets.clear_generated();
     }
 }
 
@@ -237,90 +144,17 @@ impl Window {
         status_box.append(&status);
         body.append(&status_box);
 
-        let username = adw::EntryRow::builder()
-            .title("Proton email or username")
-            .input_purpose(gtk::InputPurpose::Email)
-            .build();
-        let secrets = Secrets {
-            password: secret("Account password"),
-            code: secret("Two-factor authentication code"),
-            mailbox: secret("Mailbox password"),
-            pin: secret("Security key PIN"),
-            generated: Rc::new(RefCell::new(None)),
-        };
+        let secrets = Secrets { generated: Rc::new(RefCell::new(None)) };
         let stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
             .transition_duration(180)
             .vhomogeneous(false)
             .hhomogeneous(false)
             .build();
-        let (login, login_group) = form(
-            "Sign in",
-            "Connect an account to use it with a mail client.",
-        );
-        login_group.add(&username);
-        login_group.add(&secrets.password);
-        let sign_in = primary("Sign in");
-        let action = submit_action(&model, &username, &secrets, LoginMethod::Password);
-        sign_in.connect_clicked(move |_| action());
-        let action = submit_action(&model, &username, &secrets, LoginMethod::Password);
-        secrets.password.connect_entry_activated(move |_| action());
-        let password = secrets.password.downgrade();
-        username.connect_entry_activated(move |_| {
-            if let Some(row) = password.upgrade() {
-                row.grab_focus();
-            }
-        });
-        login.append(&sign_in);
-        login.append(&label(
-            "Requires a paid Proton Mail plan and an unlocked desktop keyring.",
-            "caption",
-        ));
-        stack.add_named(&login, Some("password"));
-
-        let (factor, factor_group) = form(
-            "Verify your account",
-            "Enter the code from your authenticator app.",
-        );
-        factor_group.add(&secrets.code);
-        let verify = primary("Verify code");
-        let action = submit_action(&model, &username, &secrets, LoginMethod::TwoFactor);
-        verify.connect_clicked(move |_| action());
-        let action = submit_action(&model, &username, &secrets, LoginMethod::TwoFactor);
-        secrets.code.connect_entry_activated(move |_| action());
-        factor.append(&verify);
-        let factor_key = gtk::Button::with_label("Use a security key instead");
-        factor_key.add_css_class("flat");
-        let action = submit_action(&model, &username, &secrets, LoginMethod::SecurityKey);
-        factor_key.connect_clicked(move |_| action());
-        factor.append(&factor_key);
-        stack.add_named(&factor, Some("factor"));
-
-        let (mailbox, mailbox_group) = form(
-            "Unlock your mailbox",
-            "Enter your separate mailbox password to unlock your mail.",
-        );
-        mailbox_group.add(&secrets.mailbox);
-        let unlock = primary("Unlock mailbox");
-        let action = submit_action(&model, &username, &secrets, LoginMethod::MailboxPassword);
-        unlock.connect_clicked(move |_| action());
-        let action = submit_action(&model, &username, &secrets, LoginMethod::MailboxPassword);
-        secrets.mailbox.connect_entry_activated(move |_| action());
-        mailbox.append(&unlock);
-        stack.add_named(&mailbox, Some("mailbox"));
-
-        let (security, security_group) = form(
-            "Use your security key",
-            "Connect your security key to continue.",
-        );
-        security_group.add(&secrets.pin);
-        let security_button = primary("Authenticate with security key");
-        let action = submit_action(&model, &username, &secrets, LoginMethod::SecurityKey);
-        security_button.connect_clicked(move |_| action());
-        let action = submit_action(&model, &username, &secrets, LoginMethod::SecurityKey);
-        secrets.pin.connect_entry_activated(move |_| action());
-        security.append(&security_button);
-        stack.add_named(&security, Some("security"));
+        // Sign-in: the one sign-in page every Proton app shows, wired to Bridge's login stream.
+        let link = model.borrow().link.clone();
+        let login = login::LoginPage::new(bridge_app(), Arc::new(BridgeLogin(link)), || {});
+        stack.add_named(&login.widget(), Some("password"));
 
         let mail = gtk::Box::new(gtk::Orientation::Vertical, 16);
         stack.add_named(&mail, Some("finished"));
@@ -332,27 +166,6 @@ impl Window {
         stack.add_named(&verification, Some("recovery"));
         body.append(&stack);
 
-        let cancel = gtk::Button::builder()
-            .label("Cancel sign-in")
-            .halign(gtk::Align::Center)
-            .css_classes(["flat"])
-            .build();
-        {
-            let model = model.clone();
-            let secrets = secrets.downgrade();
-            cancel.connect_clicked(move |_| {
-                let mut state = model.borrow_mut();
-                state.clear_secrets();
-                state.mail_settings = None;
-                state.busy = true;
-                let username = state.username.clone();
-                state.send(Command::Cancel(username));
-                if let Some(secrets) = secrets.upgrade() {
-                    secrets.clear_all();
-                }
-            });
-        }
-        body.append(&cancel);
         let accounts = adw::PreferencesGroup::builder()
             .title("Saved accounts")
             .build();
@@ -412,24 +225,22 @@ impl Window {
         {
             let model = model.clone();
             let secrets = secrets.downgrade();
-            let username = username.downgrade();
+            let login = login.clone();
             let popover = popover.downgrade();
             add_account.connect_clicked(move |_| {
-                let (Some(secrets), Some(username)) = (secrets.upgrade(), username.upgrade())
-                else {
+                let Some(secrets) = secrets.upgrade() else {
                     return;
                 };
                 let mut state = model.borrow_mut();
                 if !state.ready || state.busy || state.closing {
                     return;
                 }
-                state.clear_secrets();
                 state.username.clear();
                 state.mail_settings = None;
                 state.step = Step::Password;
                 state.message = "Sign in to another Proton account.".into();
-                username.set_text("");
-                secrets.clear_all();
+                login.clear();
+                secrets.clear_generated();
                 if let Some(popover) = popover.upgrade() {
                     popover.popdown();
                 }
@@ -457,12 +268,10 @@ impl Window {
             .css_classes(["pill"])
             .build();
         if let Some(on_back) = on_back {
-            let secrets = secrets.downgrade();
+            let login = login.clone();
             close.set_label("Back to Spotty Settings");
             close.connect_clicked(move |_| {
-                if let Some(secrets) = secrets.upgrade() {
-                    secrets.clear_login();
-                }
+                login.clear();
                 on_back();
             });
         } else {
@@ -496,13 +305,11 @@ impl Window {
         if let Some(standalone) = &standalone_window {
             standalone.set_content(Some(&overlay));
             let model = model.clone();
-            let secrets = secrets.downgrade();
+            let login = login.clone();
             standalone.connect_close_request(move |_| {
                 let mut state = model.borrow_mut();
                 state.begin_close();
-                if let Some(secrets) = secrets.upgrade() {
-                    secrets.clear_all();
-                }
+                login.clear();
                 if state.close_finished {
                     glib::Propagation::Proceed
                 } else {
@@ -518,15 +325,12 @@ impl Window {
             status,
             spinner,
             stack,
-            username,
+            login,
             secrets,
-            security_group,
-            security_button,
-            factor_key,
             mail,
             accounts,
+            preferences,
             startup,
-            cancel,
             recovery,
             add_account,
             close,
@@ -698,33 +502,8 @@ impl Window {
         self.startup.set_sensitive(enabled);
         self.startup.set_active(state.autostart);
         self.accounts.set_visible(!state.accounts.is_empty());
+        self.preferences.set_visible(!state.accounts.is_empty());
         self.accounts.set_sensitive(enabled);
-        self.factor_key
-            .set_visible(state.step == Step::FactorChoice);
-        self.secrets.pin.set_visible(state.step == Step::KeyPin);
-        self.security_button
-            .set_visible(state.step != Step::TouchKey);
-        self.security_button
-            .set_label(if state.step == Step::KeyPin {
-                "Verify security key"
-            } else {
-                "Authenticate with security key"
-            });
-        self.security_group
-            .set_description(Some(if state.step == Step::TouchKey {
-                "Touch your security key to finish verification."
-            } else if state.step == Step::KeyPin {
-                "Enter the PIN for your security key."
-            } else {
-                "Connect your security key to continue."
-            }));
-        self.cancel.set_visible(
-            state.ready
-                && !state.closing
-                && state.step != Step::Finished
-                && state.step != Step::Recovery
-                && (state.busy || state.step != Step::Password),
-        );
         let can_recover =
             !state.closing && state.start_pending.is_none() && state.preparing.is_none();
         self.recovery
@@ -733,10 +512,6 @@ impl Window {
         self.add_account.set_sensitive(enabled);
         self.close
             .set_visible(state.embedded || state.step == Step::Finished);
-        if state.secrets_revision != rendered.secrets_revision {
-            self.secrets.clear_login();
-            rendered.secrets_revision = state.secrets_revision;
-        }
         let mail_error = if state.mail_settings.is_none()
             && state.step == Step::Finished
             && !state.busy
@@ -823,7 +598,7 @@ impl Window {
                                 let mut state = model.borrow_mut();
                                 state.logout(account_id);
                                 if let Some(secrets) = secrets.upgrade() {
-                                    secrets.clear_all();
+                                    secrets.clear_generated();
                                 }
                             }
                         });
@@ -835,21 +610,20 @@ impl Window {
                         .valign(gtk::Align::Center)
                         .build();
                     let account_name = name.clone();
-                    let username = self.username.downgrade();
                     let model = self.model.clone();
+                    let login = self.login.clone();
                     let secrets = self.secrets.downgrade();
                     button.connect_clicked(move |_| {
-                        let (Some(username), Some(secrets)) =
-                            (username.upgrade(), secrets.upgrade())
-                        else {
+                        let Some(secrets) = secrets.upgrade() else {
                             return;
                         };
                         let mut state = model.borrow_mut();
                         state.username.clone_from(&account_name);
                         state.mail_settings = None;
                         state.step = Step::Password;
-                        username.set_text(&account_name);
-                        secrets.clear_all();
+                        login.clear();
+                        login.set_email(&account_name);
+                        secrets.clear_generated();
                     });
                     row.add_suffix(&button);
                 }
@@ -858,36 +632,15 @@ impl Window {
             }
             rendered.accounts.clone_from(&state.accounts);
         }
+        // The shared sign-in page runs the sign-in steps itself; only the
+        // finished and recovery pages are switched here.
         let page = match state.step {
-            Step::Password => "password",
-            Step::TwoFactor | Step::FactorChoice => "factor",
-            Step::MailboxPassword => "mailbox",
-            Step::SecurityKey | Step::KeyPin | Step::TouchKey => "security",
             Step::Finished => "finished",
             Step::Recovery => "recovery",
+            _ => "password",
         };
         self.stack.set_visible_child_name(page);
-        if rendered.step != Some(state.step) || (!rendered.ready && state.ready) {
-            if enabled {
-                match state.step {
-                    Step::Password => {
-                        self.username.set_text(&state.username);
-                        self.username.grab_focus();
-                    }
-                    Step::TwoFactor | Step::FactorChoice => {
-                        self.secrets.code.grab_focus();
-                    }
-                    Step::MailboxPassword => {
-                        self.secrets.mailbox.grab_focus();
-                    }
-                    Step::KeyPin => {
-                        self.secrets.pin.grab_focus();
-                    }
-                    _ => {}
-                }
-            }
-            rendered.step = Some(state.step);
-        }
+        rendered.step = Some(state.step);
         rendered.ready = state.ready;
     }
 }
@@ -956,8 +709,8 @@ impl EmbeddedBridge {
         if let Some(timer) = self.timer.take() {
             timer.remove();
         }
-        ui.secrets.clear_all();
-        ui.username.set_text("");
+        ui.secrets.clear_generated();
+        ui.login.clear();
         {
             let mut state = ui.model.borrow_mut();
             // Uninstalling should detach the embedded login stream.
@@ -965,7 +718,7 @@ impl EmbeddedBridge {
         }
 
         if ui.model.borrow().close_finished {
-            ui.secrets.clear_all();
+            ui.secrets.clear_generated();
             if let Some(on_closed) = on_closed.take() {
                 on_closed();
             }
@@ -978,10 +731,10 @@ impl EmbeddedBridge {
         let on_closed = RefCell::new(on_closed);
         glib::timeout_add_local(Duration::from_millis(50), move || {
             ui.model.borrow_mut().poll();
-            ui.secrets.clear_all();
+            ui.secrets.clear_generated();
             let finished = ui.model.borrow().close_finished;
             if finished {
-                ui.secrets.clear_all();
+                ui.secrets.clear_generated();
                 let on_closed = on_closed.borrow_mut().take();
                 if let Some(on_closed) = on_closed {
                     on_closed();
@@ -1021,7 +774,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             let close = ui.standalone_window.is_some() && state.closing && state.close_finished;
             drop(state);
             if close {
-                ui.secrets.clear_all();
+                ui.secrets.clear_generated();
                 ui.standalone_window.as_ref().unwrap().close();
                 glib::ControlFlow::Break
             } else {
@@ -1106,7 +859,6 @@ mod tests {
         state.auto_start = false;
         state.ready = true;
         state.username = "test@proton.me".into();
-        state.password = Zeroizing::new("login-secret".into());
         state.accounts = vec![("account-id".into(), "test@proton.me".into(), 2)];
         state.mail_settings = Some(session::MailSettings {
             id: "account-id".into(),
@@ -1131,7 +883,6 @@ mod tests {
             Some(Rc::new(|| {})),
         );
         ui.render();
-        ui.secrets.password.set_text("login-secret");
         let generated = ui.secrets.generated.borrow().as_ref().unwrap().clone();
         let weak_ui = Rc::downgrade(&ui);
         let weak_model = Rc::downgrade(&model);
@@ -1151,8 +902,6 @@ mod tests {
                 ui.overlay.height() >= 300,
                 "embedded UI collapsed vertically"
             );
-            assert!(ui.username.is_visible() && ui.username.height() > 0);
-            assert!(ui.secrets.password.is_visible() && ui.secrets.password.height() > 0);
         }
         drop(ui);
         drop(model);
@@ -1170,7 +919,7 @@ mod tests {
         assert!(weak_model.upgrade().is_some());
         {
             let ui = weak_ui.upgrade().expect("drain timer should retain the UI");
-            assert!(ui.secrets.password.text().is_empty());
+            assert!(!ui.login.is_busy());
             assert!(ui.model.borrow().username.is_empty());
             assert!(ui.model.borrow().accounts.is_empty());
             assert!(ui.model.borrow().mail_settings.is_none());
@@ -1308,50 +1057,12 @@ mod tests {
             snapshot(&ui, "login-dark");
             adw::StyleManager::default().set_color_scheme(adw::ColorScheme::Default);
         }
-        ui.username.set_text("test@proton.me");
-        ui.secrets.password.set_text("account-secret");
-        // A background status refresh must never reset the form mid-edit.
+        // Signed out: the shared sign-in page is what the window shows.
         ui.render();
-        assert_eq!(ui.secrets.password.text(), "account-secret");
-        submit_action(&model, &ui.username, &ui.secrets, LoginMethod::Password)();
-        assert!(ui.secrets.password.text().is_empty());
-        assert!(matches!(receiver.try_recv().unwrap(), Command::Login {
-            method: LoginMethod::Password, username, secret
-        } if username == "test@proton.me" && *secret == "account-secret"));
-
-        for (step, page, method) in [
-            (Step::FactorChoice, "factor", LoginMethod::TwoFactor),
-            (
-                Step::MailboxPassword,
-                "mailbox",
-                LoginMethod::MailboxPassword,
-            ),
-            (Step::KeyPin, "security", LoginMethod::SecurityKey),
-        ] {
-            updates.send(Update::Step(step)).unwrap();
-            model.borrow_mut().poll();
-            ui.render();
-            assert_eq!(ui.stack.visible_child_name().as_deref(), Some(page));
-            snapshot(&ui, page);
-            assert!(ui.stack.is_sensitive());
-            let row = match method {
-                LoginMethod::TwoFactor => &ui.secrets.code,
-                LoginMethod::MailboxPassword => &ui.secrets.mailbox,
-                _ => &ui.secrets.pin,
-            };
-            row.set_text("verification-secret");
-            submit_action(&model, &ui.username, &ui.secrets, method)();
-            assert!(row.text().is_empty());
-            assert!(
-                matches!(receiver.try_recv().unwrap(), Command::Login { secret, .. }
-                if *secret == "verification-secret")
-            );
-        }
-        updates.send(Update::Step(Step::TouchKey)).unwrap();
-        model.borrow_mut().poll();
-        ui.render();
-        assert!(!ui.secrets.pin.is_visible());
-        assert!(!ui.security_button.is_visible());
+        assert_eq!(ui.stack.visible_child_name().as_deref(), Some("password"));
+        ui.login.set_email("test@proton.me");
+        snapshot(&ui, "login-filled");
+        assert!(matches!(receiver.try_recv(), Err(_)), "nothing is sent until the page asks");
 
         updates
             .send(Update::MailSettings(session::MailSettings {
@@ -1435,18 +1146,11 @@ mod tests {
         model.borrow_mut().poll();
         ui.render();
         assert_eq!(ui.stack.visible_child_name().as_deref(), Some("password"));
-        assert_eq!(ui.username.text(), "test@proton.me");
         let account_row = ui.rendered.borrow().account_rows[0].clone();
-        ui.username.set_text("another@proton.me");
         button_in(&account_row, "Sign in").unwrap().emit_clicked();
-        assert_eq!(ui.username.text(), "test@proton.me");
-        ui.secrets.password.set_text("new-account-secret");
-        submit_action(&model, &ui.username, &ui.secrets, LoginMethod::Password)();
-        assert!(ui.secrets.password.text().is_empty());
-        assert!(
-            matches!(receiver.try_recv().unwrap(), Command::Login { username, secret, .. }
-            if username == "test@proton.me" && *secret == "new-account-secret")
-        );
+        assert_eq!(model.borrow().step, Step::Password);
+        assert_eq!(model.borrow().username, "test@proton.me");
+
         updates
             .send(Update::MailSettings(session::MailSettings {
                 id: "account-id".into(),
@@ -1478,12 +1182,10 @@ mod tests {
         assert!(entry.text().is_empty());
         assert!(ui.secrets.generated.borrow().is_none());
         assert!(model.borrow().mail_settings.is_none());
-        ui.secrets.password.set_text("unsent-secret");
         ui.standalone_window
             .as_ref()
             .unwrap()
             .emit_by_name::<bool>("close-request", &[]);
-        assert!(ui.secrets.password.text().is_empty());
         assert!(matches!(receiver.try_recv().unwrap(), Command::Close));
         assert!(!model.borrow().close_finished);
         updates.send(Update::Closed).unwrap();

@@ -3,8 +3,6 @@
 //! chain — sign-in, 2FA, key unlocking, Drive names and downloads, Calendar
 //! events — runs exactly as it would against Proton, minus the network.
 
-use aes_gcm::aead::consts::U16;
-use aes_gcm::aead::{Aead, KeyInit};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use proton_crypto::crypto::{
@@ -16,7 +14,7 @@ use proton_srp::{
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use spotty_proton_account::{Api, Client, Error, ForkRequest, Step, begin, derive_key_password, parse_pass_login_url};
+use spotty_proton_account::{Api, Client, Step, begin, derive_key_password};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -26,10 +24,6 @@ const MODULUS: &str = "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\nW2z5H
 
 type Handler = dyn Fn(&str, &str, &HashMap<String, String>, &str) -> (u16, String) + Send + Sync;
 
-/// The `pass-cli login` code and login key the pretend Proton expects in a Pass fork.
-const PASS_USER_CODE: &str = "PASS-CODE-42";
-const PASS_KEY: [u8; 32] = [0xfb; 32];
-type PassCipher = aes_gcm::AesGcm<aes_gcm::aes::Aes256, U16>;
 
 fn serve(handler: Arc<Handler>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -93,7 +87,6 @@ fn pgp() -> impl PGPProviderSync {
 
 struct World {
     key_salt: Vec<u8>,
-    key_password: String,
     user_key: String,
     address_key: String,
     address_token: String,
@@ -162,7 +155,6 @@ fn build_world<P: PGPProviderSync>(p: &P, key_password: &str, key_salt: Vec<u8>)
 
     World {
         key_salt,
-        key_password: key_password.to_owned(),
         user_key,
         address_key,
         address_token,
@@ -225,7 +217,6 @@ fn handler(world: Arc<World>, base: Arc<Mutex<String>>, two_factor: bool) -> Arc
             }
             ("POST", "auth/v4/refresh") => ok(json!({"Code":1000,"UID":"uid1","AccessToken":"acc2","RefreshToken":"ref2"})),
             ("DELETE", "auth/v4") => ok(json!({"Code":1000})),
-            ("POST", "auth/v4/sessions/forks") => fork(&world, &body_json),
             _ => {
                 // Everything below needs the session.
                 let _ = &code_seen;
@@ -233,53 +224,6 @@ fn handler(world: Arc<World>, base: Arc<Mutex<String>>, two_factor: bool) -> Arc
             }
         }
     })
-}
-
-/// Session forks: Proton only hands out a child for the two whitelisted apps,
-/// never a child that outlives its parent, and a Pass child only comes with a
-/// payload that opens with the login key and carries the key password.
-fn fork(world: &World, body: &Value) -> (u16, String) {
-    let refuse = |message: &str| (422, json!({"Code":2001,"Error":message}).to_string());
-    if body["Independent"] != json!(0) {
-        return refuse("a fork must stay tied to its parent");
-    }
-    match body["ChildClientID"].as_str() {
-        Some("linux-vpn-gui") => {
-            if body.get("UserCode").is_some() || body.get("Payload").is_some() {
-                return refuse("a VPN fork takes no code or payload");
-            }
-        }
-        Some("cli-pass") => {
-            if body["UserCode"] != json!(PASS_USER_CODE) {
-                return refuse("the Pass code doesn't match");
-            }
-            match body["Payload"].as_str() {
-                Some(payload) if opens_for_pass_cli(payload, &world.key_password) => {}
-                _ => return refuse("the Pass payload doesn't carry the key password"),
-            }
-        }
-        _ => return refuse("that app can't be signed in this way"),
-    }
-    (200, json!({"Code":1000,"Selector":"sel1"}).to_string())
-}
-
-/// Open a Pass fork payload the way pass-cli does and check the key password in it.
-fn opens_for_pass_cli(payload: &str, expected: &str) -> bool {
-    let Ok(raw) = STANDARD.decode(payload) else { return false };
-    if raw.len() < 16 {
-        return false;
-    }
-    let (nonce, sealed) = raw.split_at(16);
-    let Ok(cipher) = PassCipher::new_from_slice(&PASS_KEY) else { return false };
-    let Ok(plain) = cipher.decrypt(aes_gcm::Nonce::<U16>::from_slice(nonce), sealed) else { return false };
-    serde_json::from_slice::<Value>(&plain).map(|v| v["keyPassword"] == json!(expected)).unwrap_or(false)
-}
-
-/// Percent-encodes everything but unreserved characters, the way Proton's link does.
-fn percent_encode(text: &str) -> String {
-    text.bytes()
-        .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { char::from(b).to_string() } else { format!("%{b:02X}") })
-        .collect()
 }
 
 fn ok_private(world: &World, base: &Mutex<String>, method: &str, path: &str, query: &HashMap<String, String>, body: &Value) -> (u16, String) {
@@ -418,31 +362,6 @@ fn two_factor_step_is_required_and_wrong_codes_can_be_retried() {
         Ok(Step::Done(account)) => assert_eq!(account.name, "Sam"),
         _ => panic!("the right code should finish sign-in"),
     }
-}
-
-#[test]
-fn vpn_and_pass_get_their_own_child_sessions_and_other_apps_do_not() {
-    let key_salt = vec![3u8; 16];
-    let key_password = derive_key_password(PASSWORD, &key_salt).unwrap();
-    let world = Arc::new(build_world(&pgp(), &key_password, key_salt));
-    let url = serve(handler(world, Arc::new(Mutex::new(String::new())), false));
-    let account = match begin(&Api::with_base(&url).unwrap(), "sam@proton.test", PASSWORD).expect("sign in") {
-        Step::Done(account) => account,
-        _ => panic!("expected to be done"),
-    };
-    let client = Client::with_api(Api::with_base(&url).unwrap(), account, |_| {}).unwrap();
-
-    assert_eq!(client.fork_for_vpn().expect("VPN fork"), "sel1");
-
-    // The link pass-cli prints, with the code and key the pretend Proton checks.
-    let login_text = format!("0:{PASS_USER_CODE}:{}:cli-pass", STANDARD.encode(PASS_KEY));
-    let link = format!("https://account.proton.me/desktop/login?app=pass#payload={}", percent_encode(&login_text));
-    let login = parse_pass_login_url(&link).expect("pass-cli's link");
-    client.approve_pass_login(&login).expect("Pass approval");
-
-    // Spotty refuses other apps itself, so nothing reaches Proton.
-    let refused = client.fork_session(&ForkRequest { child_client_id: "cli-drive", user_code: None, payload: None });
-    assert!(matches!(refused, Err(Error::Unsupported(_))), "{refused:?}");
 }
 
 #[allow(dead_code)]

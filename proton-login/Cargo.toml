@@ -1,0 +1,14 @@
+[package]
+name = "spotty-proton-login"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The one Proton sign-in page every Proton integration in Spotty shows"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+gtk = { version = "0.9", package = "gtk4", features = ["v4_12"] }
+adw = { version = "0.7", package = "libadwaita", features = ["v1_6"] }
+glib = "0.20"
+gio = "0.20"
+zeroize = "1"

@@ -38,7 +38,10 @@ pub struct Client {
     pub(crate) pgp: Box<dyn Pgp>,
     pub email: String,
     pub name: String,
-    pub(crate) key_password: zeroize::Zeroizing<String>,
+    /// Unlocks the account's keys. Held only until the keys are unlocked (the
+    /// first `keyring()` call), then wiped: the unlocked keys are all that is
+    /// needed from then on.
+    key_password: Mutex<Option<zeroize::Zeroizing<String>>>,
     keyring: Mutex<Option<Arc<Keyring>>>,
     /// Unlocked Drive node keys by link id, so browsing doesn't redo work.
     pub(crate) node_keys: Mutex<HashMap<String, Key>>,
@@ -61,7 +64,7 @@ impl Client {
             pgp: pgp::provider(),
             email: account.email.clone(),
             name: account.name.clone(),
-            key_password: zeroize::Zeroizing::new(account.key_password.clone()),
+            key_password: Mutex::new(Some(zeroize::Zeroizing::new(account.key_password.clone()))),
             keyring: Mutex::new(None),
             node_keys: Mutex::new(HashMap::new()),
             calendar_keys: Mutex::new(HashMap::new()),
@@ -70,16 +73,6 @@ impl Client {
 
     pub fn api(&self) -> &Api {
         &self.api
-    }
-
-    /// The signed-in account as it should be saved.
-    pub fn account(&self) -> Option<Account> {
-        Some(Account {
-            tokens: self.api.tokens()?,
-            key_password: self.key_password.to_string(),
-            email: self.email.clone(),
-            name: self.name.clone(),
-        })
     }
 
     /// End the session on Proton's side.
@@ -95,17 +88,20 @@ impl Client {
         if let Some(ring) = self.keyring.lock().unwrap().as_ref() {
             return Ok(ring.clone());
         }
-        let ring = Arc::new(self.load_keyring()?);
+        let key = self.key_password.lock().unwrap().clone().ok_or(Error::SignedOut)?;
+        let ring = Arc::new(self.load_keyring(&key)?);
         *self.keyring.lock().unwrap() = Some(ring.clone());
+        // The keys are unlocked now; the password itself is no longer needed.
+        *self.key_password.lock().unwrap() = None;
         Ok(ring)
     }
 
-    fn load_keyring(&self) -> Result<Keyring> {
+    fn load_keyring(&self, key_password: &str) -> Result<Keyring> {
         let user = self.api.get("core/v4/users", &[])?;
         let mut user_keys = Vec::new();
         for key in array(&user, "/User/Keys") {
             if let Some(armored) = key.get("PrivateKey").and_then(Value::as_str) {
-                if let Ok(unlocked) = self.pgp.unlock(armored, self.key_password.as_bytes()) {
+                if let Ok(unlocked) = self.pgp.unlock(armored, key_password.as_bytes()) {
                     user_keys.push(unlocked);
                 }
             }
@@ -119,7 +115,7 @@ impl Client {
             let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
             let mut keys = Vec::new();
             for key in address.get("Keys").and_then(Value::as_array).into_iter().flatten() {
-                if let Ok(unlocked) = self.unlock_address_key(key, &user_keys) {
+                if let Ok(unlocked) = self.unlock_address_key(key, key_password, &user_keys) {
                     keys.push(unlocked);
                 }
             }
@@ -128,7 +124,7 @@ impl Client {
         Ok(Keyring { user: user_keys, addresses: out })
     }
 
-    fn unlock_address_key(&self, key: &Value, user_keys: &[Key]) -> Result<Key> {
+    fn unlock_address_key(&self, key: &Value, key_password: &str, user_keys: &[Key]) -> Result<Key> {
         let armored = key.get("PrivateKey").and_then(Value::as_str).unwrap_or_default();
         match key.get("Token").and_then(Value::as_str).filter(|t| !t.is_empty()) {
             // Current accounts: a random passphrase encrypted to the user key.
@@ -137,7 +133,7 @@ impl Client {
                 self.pgp.unlock(armored, &passphrase)
             }
             // Legacy accounts: the key password itself.
-            None => self.pgp.unlock(armored, self.key_password.as_bytes()),
+            None => self.pgp.unlock(armored, key_password.as_bytes()),
         }
     }
 }

@@ -13,13 +13,40 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-/// A signed-in account: what Spotty keeps between runs (see `store`).
-#[derive(Clone, Serialize, Deserialize)]
+/// A signed-in account, in memory.
+#[derive(Clone)]
 pub struct Account {
     pub tokens: Tokens,
     /// Unlocks the account's private keys. Derived from your password, which
-    /// itself is never stored.
+    /// itself is never stored. Kept in the desktop keyring between runs.
     pub key_password: String,
+    pub email: String,
+    pub name: String,
+}
+
+impl Account {
+    /// What may be written to a session file: the tokens and who the account
+    /// is. The key password is left out; it is saved apart (see `secrets`).
+    pub fn saved(&self) -> SavedSession {
+        SavedSession { tokens: self.tokens.clone(), email: self.email.clone(), name: self.name.clone() }
+    }
+
+    /// A copy of the key password, for the keyring.
+    pub fn key(&self) -> Zeroizing<String> {
+        Zeroizing::new(self.key_password.clone())
+    }
+
+    /// A saved session put back together with its key password from the keyring.
+    pub fn from_saved(saved: SavedSession, key_password: Zeroizing<String>) -> Self {
+        Self { tokens: saved.tokens, key_password: key_password.to_string(), email: saved.email, name: saved.name }
+    }
+}
+
+/// What Spotty writes to a session file: the tokens and the account's name and
+/// email. It holds no password and no key password.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SavedSession {
+    pub tokens: Tokens,
     pub email: String,
     pub name: String,
 }

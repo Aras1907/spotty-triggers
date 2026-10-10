@@ -1,8 +1,9 @@
 # spotty-proton-account
 
 Spotty's native Proton account client: sign-in, Proton Drive and Proton
-Calendar, and the session forks that give Proton Pass and Proton VPN the same
-sign-in. Written in Rust and compiled into Spotty. There is no web view, no
+Calendar. Each Spotty app that uses it (Calendar, Drive) has its own sign-in and
+session; nothing is forked or shared with Proton Pass or Proton VPN. Written in
+Rust and compiled into Spotty. There is no web view, no
 browser engine and no helper process.
 
 | Module | What it does |
@@ -13,7 +14,6 @@ browser engine and no helper process.
 | `drive` | "My files": list folders, decrypt names, download and decrypt files (blocks are hash-checked) |
 | `calendar` | Calendars and events: calendar keys, event cards, repeating events (`ical`) |
 | `pgp` | The few OpenPGP operations needed, over Proton's `proton-crypto` |
-| `fork` | Signs Proton Pass's CLI and Proton VPN in with this session through Proton's session fork (no password is shared); only those two child apps are allowed |
 
 SRP and OpenPGP come from Proton's open-source crates `proton-srp` and
 `proton-crypto` (MIT, from `rust-registry.proton.me`; the pure-Rust `rustpgp`
@@ -29,10 +29,7 @@ third-party Drive client — and never claims to be one of Proton's apps.
   password is kept only while a two-factor code or mailbox password is pending.
   The buffers are zeroed afterwards. The session (tokens + key password) is stored
   by Spotty itself, see `src/features/proton_native.rs` in the trigger repo.
-- Session forks are checked before anything is sent: only `cli-pass` and
-  `linux-vpn-gui` may be forked, always with `Independent: 0`. A fork request
-  never carries the login password. Pass's payload is AES-256-GCM, keyed with the
-  one-time key from pass-cli's approval link, which only pass-cli can open.
+- There is no session fork: this crate never gives a session to another app.
 - Unlocked keys and decrypted data are never written to disk by this crate.
 - Not implemented yet: OpenPGP signature verification of names and events,
   FIDO2 security keys, Proton's human-verification challenge, shared-with-me /
@@ -46,6 +43,6 @@ cargo test            # unit tests + a pretend-Proton end-to-end test
 
 `tests/fake_proton.rs` runs a local server that speaks the API with a real SRP
 server, real OpenPGP keys and real ciphertext, so sign-in, two-factor, the key
-chain, Drive names and downloads, Calendar events, and the VPN and Pass forks are
-exercised end to end without a network. The tests never contact Proton's live
+chain, Drive names and downloads, and Calendar events are exercised end to end
+without a network. The tests never contact Proton's live
 API, and they cannot prove that Proton's live service behaves the same.

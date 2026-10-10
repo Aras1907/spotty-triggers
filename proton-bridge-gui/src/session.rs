@@ -336,7 +336,6 @@ async fn run_session(
                         stream_confirmed = true;
                         if matches!(event.event.as_ref(), Some(stream_event::Event::Login(login)) if matches!(login.event, Some(login_event::Event::Finished(_)) | Some(login_event::Event::AlreadyLoggedIn(_)))) {
                             username.clear();
-                            crate::share::notify(crate::share::LoginEvent::Finished);
                         }
                         dispatch(&mut connection, event, &send).await;
                     }
@@ -356,7 +355,6 @@ async fn run_session(
                 let result = match command {
                     Some(Command::Login { method, username: account, secret }) => {
                         username.clone_from(&account);
-                        crate::share::notify(crate::share::LoginEvent::Entered { method, username: &account, secret: &secret });
                         connection.login(method, account, secret).await
                     }
                     Some(Command::Autostart(value)) => {
@@ -401,7 +399,6 @@ async fn run_session(
                         Ok(())
                     }
                     Some(Command::Cancel(account)) => {
-                        crate::share::notify(crate::share::LoginEvent::Abandoned);
                         abort(&mut connection, account).await;
                         username.clear();
                         send(Update::Step(Step::Password));
@@ -409,7 +406,6 @@ async fn run_session(
                     }
                     Some(Command::Close) | None => {
                         if !username.is_empty() {
-                            crate::share::notify(crate::share::LoginEvent::Abandoned);
                             abort(&mut connection, username).await;
                         }
                         // Keep Bridge alive after the companion window closes.
@@ -563,7 +559,6 @@ async fn dispatch(
 async fn show_account(connection: &mut Connection, id: String, send: &impl Fn(Update)) {
     match read_account_settings(connection, id.clone()).await {
         Ok(settings) => {
-            crate::share::remember_account(&settings);
             send(Update::MailSettings(settings))
         }
         Err(message) => {

@@ -15,6 +15,8 @@ pub enum Error {
     Unsupported(String),
     /// No saved session, or Proton ended it.
     SignedOut,
+    /// The desktop keyring couldn't store or return a key password.
+    Keyring(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -44,6 +46,7 @@ impl fmt::Display for Error {
             Error::Protocol(message) => write!(f, "Unexpected answer from Proton: {message}"),
             Error::Unsupported(message) => f.write_str(message),
             Error::SignedOut => f.write_str("You're not signed in to Proton"),
+            Error::Keyring(message) => write!(f, "Spotty couldn't use your desktop keyring ({message})"),
         }
     }
 }
