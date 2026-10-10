@@ -56,6 +56,55 @@ pub fn share_sign_in() {
     }
 }
 
+/// Automatic sharing: once per app per run, so signing out of one app on
+/// purpose is never undone behind the user's back.
+static AUTO_TRIED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+fn first_auto_try(id: &'static str) -> bool {
+    let mut tried = AUTO_TRIED.lock().unwrap_or_else(|p| p.into_inner());
+    if tried.contains(&id) {
+        return false;
+    }
+    tried.push(id);
+    true
+}
+
+/// Run on the GTK thread when Spotty starts (and again when an app reports it
+/// is signed out): if Spotty is signed in to Proton, give that sign-in to every
+/// installed app that turns out not to be signed in, without any click.
+pub fn share_on_start() {
+    if !native::signed_in() {
+        return;
+    }
+    let Some(config) = crate::app::shared_config() else { return };
+    let (pass, vpn) = {
+        let config = config.borrow();
+        (config.proton_service_enabled("proton-pass"), config.proton_service_enabled("proton-vpn"))
+    };
+    if pass && crate::proton_pass::available() {
+        // Pass reports "signed out" once it has looked; `share_pass_if_signed_out` then acts.
+        crate::proton_pass::ensure_loaded();
+    }
+    if vpn && crate::proton_vpn::available() && first_auto_try("proton-vpn") && !signing_in("proton-vpn") {
+        std::thread::spawn(|| {
+            // Ask the client; only a definite "not signed in" gets the shared sign-in.
+            if crate::proton_vpn::status().is_ok_and(|s| !s.logged_in) {
+                match hand_to_vpn() {
+                    Ok(()) => notify(&gettext("Proton VPN"), &gettext("Proton VPN is signed in with your Proton account.")),
+                    Err(error) => log::warn!("Proton VPN couldn't use the shared sign-in: {error}"),
+                }
+            }
+        });
+    }
+}
+
+/// Called when Proton Pass has looked and is signed out.
+pub fn share_pass_if_signed_out() {
+    if native::signed_in() && first_auto_try("proton-pass") && !signing_in("proton-pass") {
+        glib::MainContext::default().invoke(|| crate::proton_pass::sign_in());
+    }
+}
+
 /// Give one installed integration the Proton sign-in that already exists. Returns
 /// at once; the work runs in the background and reports its own outcome.
 pub fn share_with(id: &str) {

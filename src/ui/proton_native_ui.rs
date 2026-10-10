@@ -146,7 +146,7 @@ pub fn open_account_window(parent: Option<&gtk::Window>) {
     // Sign in
     let signin_page = adw::PreferencesPage::new();
     let intro = adw::PreferencesGroup::builder()
-        .description(gettext("One sign-in for Proton Calendar, Drive, Pass and VPN in Spotty. Your password is turned into a one-time proof and never stored."))
+        .description(gettext("One sign-in for Proton Calendar, Drive, Pass and VPN in Spotty. Pass and VPN you already signed in to keep working; sign in here once so Calendar and Drive join them. Your password is turned into a one-time proof and never stored."))
         .build();
     intro.set_header_suffix(Some(&gtk::Image::builder().icon_name("avatar-default-symbolic").pixel_size(32).build()));
     let credentials = adw::PreferencesGroup::builder().title(gettext("Sign in")).build();

@@ -190,6 +190,7 @@ pub fn refresh() {
     }
     std::thread::spawn(|| {
         let result = fetch_listing();
+        let mut signed_out = false;
         {
             let mut cache = cache();
             cache.fetched = Some(Instant::now());
@@ -204,11 +205,15 @@ pub fn refresh() {
                     cache.vaults = 0;
                     cache.account.clear();
                     cache.state = State::SignedOut;
+                    signed_out = true;
                 }
                 Err(Failure::Other(message)) => cache.state = State::Failed(message),
             }
         }
         notify_ui();
+        if signed_out {
+            crate::proton_session::share_pass_if_signed_out();
+        }
     });
 }
 

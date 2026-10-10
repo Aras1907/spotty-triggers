@@ -124,7 +124,12 @@ pub fn client() -> Option<Arc<pa::Client>> {
         state.loaded = true;
         if let Some(account) = store_dir().and_then(|dir| read_saved(&dir)) {
             match make_client(account) {
-                Ok(client) => state.client = Some(client),
+                Ok(client) => {
+                    state.client = Some(client);
+                    // Once Spotty has started, give the saved sign-in to any
+                    // Proton app that isn't signed in (on the GTK thread).
+                    glib::timeout_add_seconds_once(4, crate::proton_session::share_on_start);
+                }
                 Err(error) => log::warn!("Proton session not usable: {error}"),
             }
         }
