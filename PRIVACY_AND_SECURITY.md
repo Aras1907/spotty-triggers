@@ -61,13 +61,15 @@ available at `../PRIVACY_AND_SECURITY.md`.
   events. The live path may meet Proton's anti-abuse checks (see the README).
 - Sign out in the account window ends Spotty's Proton session at Proton and
   deletes `session.json`. It also signs out Pass and VPN on this computer and
-  erases the Proton web profile. Pass's local sign-out runs in the background,
+  erases any Proton web profile left by older versions. Pass's local sign-out runs in the background,
   and Spotty does not wait for it. Signing out in Pass's settings removes only
   Pass's session on this computer.
-- The Proton web profile (`~/.local/share/spotty/proton-web`) is used only to
-  show Proton web pages, such as Open Proton Pass. Spotty does not sign it in.
-  Spotty writes an empty marker file there when a Proton web page with an
-  account path loads. Nothing reads that marker.
+- Proton Pass can be locked with a PIN. Spotty stores only a random salt and a
+  PBKDF2-HMAC-SHA256 hash (`~/.config/spotty/pass-pin.json`, mode 0600), never
+  the PIN. While locked, the `pass` trigger lists nothing and copies nothing.
+  Wrong PINs are slowed down. The PIN gates Spotty's use of Proton Pass; it does
+  not encrypt the vault, and someone who can edit your config folder can delete
+  it.
 - Web manifests support HTTP(S) links. Activating one sends the query to its
   website. Translation uses the configured LibreTranslate endpoint, which is
   local by default but can be remote. Dictionary/currency backends can also

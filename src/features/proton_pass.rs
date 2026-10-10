@@ -560,6 +560,9 @@ fn title_of(target: &str) -> String {
 /// notification that never contains the secret. Signed out, it starts the
 /// sign-in instead.
 pub fn copy_field(field: Field, target: &str) {
+    if !crate::proton_pass_pin::unlocked() {
+        return;
+    }
     let target = target.to_owned();
     std::thread::spawn(move || {
         use crate::i18n::gettext;
@@ -595,6 +598,9 @@ pub fn copy_field(field: Field, target: &str) {
 
 /// Open the first web address stored in a login.
 pub fn open_website(target: &str) {
+    if !crate::proton_pass_pin::unlocked() {
+        return;
+    }
     let target = target.to_owned();
     std::thread::spawn(move || {
         use crate::i18n::gettext;
@@ -766,7 +772,20 @@ pub fn sign_out() {
 /// Run a `pass` trigger row. Everything happens in the background; the
 /// outcome is a notification that never contains a secret.
 pub fn run_search_action(op: &str, target: &str) {
+    // A PIN, if set, comes first: ask for it and then do what was asked.
+    let needs_pin = !matches!(op, "signin" | "signout" | "refresh");
+    if needs_pin && !crate::proton_pass_pin::unlocked() {
+        let (op, target) = (op.to_owned(), target.to_owned());
+        crate::proton_pass_pin::unlock_then(None, move || {
+            if op != "unlock" {
+                run_search_action(&op, &target);
+            }
+            crate::app::refresh_search_window();
+        });
+        return;
+    }
     match op {
+        "unlock" => {}
         "signin" => sign_in(),
         "signout" => sign_out(),
         "refresh" => refresh(),

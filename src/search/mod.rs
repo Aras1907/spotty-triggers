@@ -110,9 +110,6 @@ pub enum Action {
         op: String,
         target: String,
     },
-    /// Open a Proton web app (Calendar, Drive) in Spotty's Proton window,
-    /// signed in with Spotty's own Proton web profile.
-    OpenProtonWeb(String),
     /// Hand over a Proton Pass vault item's field (or run a sign-in action):
     /// `op` is "password", "username", "totp", "card", "cvv", "note",
     /// "website", "signin" or "refresh"; `target` is `share_id/item_id`.

@@ -130,12 +130,10 @@ pub fn open_account_window(parent: Option<&gtk::Window>) {
         .default_width(560)
         .default_height(720)
         .build();
-    // Modal only over the window that opened it: a modal window without a
-    // parent would block every other Spotty window, the search window included.
-    if let Some(parent) = parent.filter(|p| p.is_visible()) {
-        window.set_transient_for(Some(parent));
-        window.set_modal(true);
-    }
+    // Not modal: GNOME attaches a modal window to its parent and squares off
+    // its top corners, and in Spotty's shared window group another modal
+    // window (a Proton settings popup) swallowed its clicks, close included.
+    own_window(&window, parent);
     let header = adw::HeaderBar::builder()
         .title_widget(&adw::WindowTitle::new(&gettext("Proton account"), &gettext("Built into Spotty")))
         .build();
@@ -571,8 +569,11 @@ impl AccountWindow {
                 native::sign_out();
             },
             move |()| {
-                // Also forget the private web profile behind "Open Proton Pass".
-                crate::proton_web::sign_out();
+                // Older Spotty versions kept a private web profile for a
+                // Proton web window that no longer exists; erase what is left.
+                for dir in [dirs::data_dir(), dirs::cache_dir()].into_iter().flatten() {
+                    let _ = std::fs::remove_dir_all(dir.join("spotty").join("proton-web"));
+                }
                 ui.set_busy(false);
                 ui.reset_form();
                 ui.show_page();
@@ -664,10 +665,10 @@ fn signed_out_page(service: &str, parent: gtk::Window) -> adw::StatusPage {
     page
 }
 
-/// Keep a browser window (Drive, agenda) clickable. GTK blocks input to every
+/// Keep a window (account, Drive, agenda) clickable. GTK blocks input to every
 /// window in a modal window's group while that modal window is visible, and all
 /// of Spotty's windows share one group by default: opened from the modal Proton
-/// settings popup, the account window or the search window, the browser
+/// settings popup, the account window or the search window, such a window
 /// couldn't even be closed. Its own group takes it out of their reach.
 fn own_window(window: &adw::ApplicationWindow, parent: Option<&gtk::Window>) {
     if let Some(parent) = parent.filter(|p| p.is_visible()) {

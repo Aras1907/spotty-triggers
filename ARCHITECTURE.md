@@ -59,8 +59,8 @@ src/features/           Feature services.
                         off the GTK thread).
   proton_session.rs     The one Proton sign-in: after-install hook, sharing it
                         with Pass and VPN, and the VPN fork hand-off.
-  proton_web.rs         WebKitGTK window for Proton web pages (for example Open
-                        Proton Pass). Not used to sign in.
+  proton_pass_pin.rs    The optional PIN in front of Proton Pass: salted
+                        PBKDF2 hash, timed unlock, the prompt and its settings.
   proton_pass.rs        Drives the embedded pass-cli child process, including
                         its sign-in approval.
   proton_bridge.rs      Whether Mail Bridge is supported on this platform.
@@ -251,9 +251,10 @@ other app. No login password is shared.
   (`approve_pass_login`). Without a native session, the account window opens
   instead, and Pass signs in once Spotty is signed in to Proton (`share_sign_in`).
   A sign-in that nobody finishes is stopped after 10 minutes.
-- `src/features/proton_web.rs` provides the WebKitGTK window used for
-  `OpenProtonWeb` pages (for example "Open Proton Pass"). It does not sign in.
-  Without WebKitGTK 6 links open in the default browser.
+- `src/features/proton_pass_pin.rs` holds the PIN lock. With a PIN set, the
+  `pass` trigger shows one locked row and `run_search_action` asks for the PIN
+  before any secret is read. Only a salt and a PBKDF2-HMAC-SHA256 hash are
+  stored. It is a lock on Spotty's use of Pass, not encryption of the vault.
 - `proton-pass-embedded/build.rs` (with the `bundled` feature) runs
   `prepare_bundle.py`, which fetches the source pinned in `sources.json`, checks
   its SHA-256, and builds `pass-cli --locked`. The binary is compressed into Spotty.
@@ -286,10 +287,8 @@ Bridge is supported on this platform.
 | `~/.config/spotty/spotty_keyword.txt` | Keyword passed to a summoned daemon | Spotty |
 | `~/.local/share/spotty/proton-account/` | Folder, mode 0700 | `proton_native.rs` |
 | `~/.local/share/spotty/proton-account/session.json` | Spotty's Proton session: tokens and key password, not encrypted. Mode 0600. Ignored (treated as signed out) if group or other can read it. Sign-out deletes it. The Pass and VPN sessions are forked from it | `proton_native.rs` |
-| `~/.local/share/spotty/proton-web/` | Private WebKit profile for Proton web pages. Not used to sign in. Sign-out erases it | `proton_web.rs` |
-| `~/.local/share/spotty/proton-web/signed-in` | Empty marker, written when a Proton web page with an account path loads. Nothing reads it | `proton_web.rs` |
+| `~/.config/spotty/pass-pin.json` | Salt, PBKDF2 hash and lock timeout of the Proton Pass PIN. Mode 0600. Removing the PIN deletes it | `proton_pass_pin.rs` |
 | `~/.local/share/spotty/proton-pass/` | `pass-cli`'s own session folder (Pass's forked session); key in the desktop keyring | `pass-cli` |
-| `~/.cache/spotty/proton-web/` | WebKit cache for the Proton web window | `proton_web.rs` |
 | `~/.cache/spotty/proton-pass/<bundle id>/` | Unpacked `pass-cli` (owner-only folder) | `proton_pass.rs` |
 | `~/.cache/spotty/proton-vpn/<bundle id>/` | Unpacked VPN bundle and helper | `proton_vpn.rs` (**Spotty checkout**) |
 | Desktop keyring | Pass's session key, VPN library session | Proton's clients |
@@ -312,9 +311,6 @@ file saved by the user goes to the Downloads folder as a plain file.
 - `src/features/proton_native.rs`: the header says the password is "forgotten"
   after the proof. It is kept while a two-factor code or mailbox password is
   pending.
-- `src/features/proton_web.rs`: `sign_in()` opens Proton's sign-in page, and
-  nothing calls it. `signed_in()` reads the marker file, and nothing calls that
-  either. Both are dead code.
 - `triggers/proton-calendar.json` and `triggers/proton-drive.json` say to sign in
   "in the settings, in Spotty's own form". The sign-in is now the Proton account
   window. `triggers/proton-vpn.json` says to sign in in the VPN window with a

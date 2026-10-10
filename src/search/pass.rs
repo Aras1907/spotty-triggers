@@ -12,10 +12,6 @@ use nucleo_matcher::{Matcher, Utf32String};
 const MAX_ITEMS: usize = 8;
 const TOP: i32 = 200_000;
 
-pub fn item_url(item: &Item) -> String {
-    format!("https://pass.proton.me/u/0/share/{}/item/{}", item.share_id, item.item_id)
-}
-
 fn pass_row(title: String, subtitle: String, icon: &str, op: &str, target: &str, score: i32) -> SearchResult {
     SearchResult {
         kind: ResultKind::System,
@@ -23,17 +19,6 @@ fn pass_row(title: String, subtitle: String, icon: &str, op: &str, target: &str,
         subtitle: Some(subtitle),
         icon: Some(icon.into()),
         action: Action::ProtonPass { op: op.into(), target: target.into() },
-        score,
-    }
-}
-
-fn open_pass_row(score: i32) -> SearchResult {
-    SearchResult {
-        kind: ResultKind::Web,
-        title: gettext("Open Proton Pass"),
-        subtitle: Some(gettext("Your vault in Spotty's Proton window")),
-        icon: Some("dialog-password-symbolic".into()),
-        action: Action::OpenProtonWeb("https://pass.proton.me/".into()),
         score,
     }
 }
@@ -101,11 +86,11 @@ fn item_rows(item: &Item, score: i32, expand: bool) -> Vec<SearchResult> {
             rows.push(pass_row(title, item_subtitle(item, &gettext("Enter copies the note")), icon, "note", &target, score));
         }
         _ => rows.push(SearchResult {
-            kind: ResultKind::Web,
+            kind: ResultKind::System,
             title,
-            subtitle: Some(item_subtitle(item, &gettext("Enter opens it in Proton Pass"))),
+            subtitle: Some(item_subtitle(item, &gettext("Spotty can't copy from this kind of item"))),
             icon: Some(icon.into()),
-            action: Action::OpenProtonWeb(item_url(item)),
+            action: Action::Noop,
             score,
         }),
     }
@@ -136,6 +121,15 @@ pub fn search(query: &str) -> Vec<SearchResult> {
             TOP,
         )];
     }
+    if !crate::proton_pass_pin::unlocked() {
+        // Nothing of the vault, not even titles, until the PIN is typed.
+        return vec![message_row(
+            gettext("Proton Pass is locked"),
+            gettext("Press Enter and type your PIN"),
+            "unlock",
+            TOP,
+        )];
+    }
     proton_pass::ensure_loaded();
     let needle = query.trim().to_lowercase();
     proton_pass::with_items(|state, items| match state {
@@ -145,20 +139,18 @@ pub fn search(query: &str) -> Vec<SearchResult> {
             } else {
                 gettext("Sign in once with your Proton account")
             };
-            vec![
-                message_row(gettext("Sign in to Proton Pass"), subtitle, "signin", TOP),
-                open_pass_row(TOP - 10),
-            ]
+            vec![message_row(gettext("Sign in to Proton Pass"), subtitle, "signin", TOP)]
         }
         State::Failed(message) => vec![
             message_row(gettext("Proton Pass isn't available right now"), message.clone(), "", TOP),
             message_row(gettext("Try again"), gettext("Reload your vault"), "refresh", TOP - 1),
-            open_pass_row(TOP - 10),
         ],
-        State::Idle | State::Loading => vec![
-            message_row(gettext("Loading your vault…"), gettext("Only item titles are loaded; secrets stay in Proton Pass until you copy one"), "", TOP),
-            open_pass_row(TOP - 10),
-        ],
+        State::Idle | State::Loading => vec![message_row(
+            gettext("Loading your vault…"),
+            gettext("Only item titles are loaded; secrets stay in Proton Pass until you copy one"),
+            "",
+            TOP,
+        )],
         State::Ready => ready_rows(&needle, items),
     })
 }
@@ -200,7 +192,6 @@ fn ready_rows(needle: &str, items: &[Item]) -> Vec<SearchResult> {
             ));
         }
     }
-    rows.push(open_pass_row(TOP - 100 * (MAX_ITEMS as i32 + 2)));
     rows
 }
 
@@ -246,15 +237,15 @@ mod tests {
         let note = item_rows(&item("4", "Wifi code", Kind::Note), 100, true);
         assert!(matches!(&note[0].action, Action::ProtonPass { op, .. } if op == "note"));
         let alias = item_rows(&item("5", "News alias", Kind::Alias), 100, true);
-        assert!(matches!(&alias[0].action, Action::OpenProtonWeb(url) if url == "https://pass.proton.me/u/0/share/s1/item/5"));
+        assert!(matches!(&alias[0].action, Action::Noop));
     }
 
     #[test]
     fn empty_query_lists_a_few_titles_never_secrets() {
         let items: Vec<Item> = (0..20).map(|n| item(&n.to_string(), &format!("Site {n}"), Kind::Login)).collect();
         let rows = ready_rows("", &items);
-        // hint + 8 items + "Open Proton Pass"
-        assert_eq!(rows.len(), 1 + MAX_ITEMS + 1);
+        // hint + 8 items
+        assert_eq!(rows.len(), 1 + MAX_ITEMS);
         assert!(rows[0].subtitle.as_deref().unwrap_or("").contains("20 items"));
     }
 }

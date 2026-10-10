@@ -14,8 +14,8 @@ description: Use before any change that touches Proton, including sign-in, saved
    (tokens and the key password, not encrypted). Its folder is 0700 and the file
    0600. The reader ignores a file that others can read. Keep that check. Pass's
    forked session lives in pass-cli's folder (key in the keyring), and VPN's in
-   the desktop keyring. Do not copy any of them elsewhere. The Proton web profile
-   is not a session store.
+   the desktop keyring. Do not copy any of them elsewhere. The Pass PIN file
+   (`~/.config/spotty/pass-pin.json`) holds a salted hash only, never the PIN.
 3. Unlocked keys, decrypted names, calendar events and vault contents stay in
    memory. Never write them to disk or log them.
 4. Never log passwords, 2FA or mailbox codes, key passwords, tokens, fork
@@ -45,8 +45,8 @@ description: Use before any change that touches Proton, including sign-in, saved
 See `ARCHITECTURE.md`, "Data locations". Main places: `session.json` (Spotty's
 Proton session; the Pass and VPN sessions are forked from it),
 `~/.local/share/spotty/proton-pass/` (pass-cli session; key in the keyring), the
-desktop keyring (VPN session, Pass key), `~/.local/share/spotty/proton-web/` (shows
-Proton web pages; never signs in), and `~/.cache/spotty/proton-*/` (unpacked
+desktop keyring (VPN session, Pass key), `~/.config/spotty/pass-pin.json` (Pass PIN
+hash), and `~/.cache/spotty/proton-*/` (unpacked
 binaries).
 
 ## Checklist

@@ -218,7 +218,7 @@ window.
   session at Proton and deletes `session.json`. The Pass and VPN sessions are
   forked from that session (with `Independent: 0`), so Proton should end them too;
   that is not tested against Proton's live service. Spotty also signs Pass and
-  VPN out here and erases its Proton web profile. Pass's sign-out runs in the
+  VPN out here and erases any Proton web profile left by older versions. Pass's sign-out runs in the
   background, and Spotty does not wait for it to finish. Signing out in Pass's
   settings removes only Pass's session on this computer.
 - **Only in memory**: unlocked keys, decrypted file names, calendar events and
