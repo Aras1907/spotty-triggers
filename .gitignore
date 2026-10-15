@@ -1,9 +1,3 @@
 /.cargo-proton/
 /build/
 /.integration/
-/proton-bridge-gui/target/
-/proton-bridge-gui/__pycache__/
-/proton-account/target/
-/proton-account/Cargo.lock
-/proton-login/target/
-/proton-login/Cargo.lock

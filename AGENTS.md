@@ -9,8 +9,7 @@
 
 ## Before you change anything
 
-1. Read this file, `SOUL.md` and `ARCHITECTURE.md`. For anything that touches
-   Proton, also read the `proton-integration` skill in `.claude/skills/`.
+1. Read this file, `SOUL.md` and `ARCHITECTURE.md`.
 2. Run `git status` and `git diff --stat`. The working tree may hold someone's
    unfinished work. Do not revert, reset, clean, stash or stage files you did
    not change.
@@ -25,14 +24,9 @@
 
 ## Never
 
-- Never store, log or print a Proton password, 2FA code, mailbox password, key
-  password or session token.
-- Never write unlocked keys, decrypted names, calendar events or vault contents
-  to disk.
-- Never run a Proton sign-in in a web view or through a third-party CLI.
-- Never share a Proton session or its password with another Proton app. Every
-  app (Calendar, Drive, Pass, VPN, Mail Bridge) signs in on its own, with its own
-  session. There is no session fork.
+- Never add a Proton integration (Mail Bridge, Calendar, Drive, Pass or VPN)
+  back into Spotty. They were removed on purpose; only add one if the user asks.
+- Never store, log or print a password, token or other secret.
 - Never add LibreOffice, `soffice` or `libreoffice` conversions.
 - Never build or run a Flatpak.
 - Never edit `trigger-backends/` inside `.integration/Spotty` by hand. Change this
@@ -49,34 +43,28 @@
   `index.json` and a manifest out of step.
 - Never commit, push or open a PR unless the user asks. When asked, push only this
   trigger repo.
-- Never claim a live Proton login works, for any Proton app. The
-  tests use a fake Proton server; say so whenever you report on the sign-in path.
 
 ## How to verify
 
 Run the checks that match your change. The `verify-before-push` skill has the
 full list.
 
-- Proton account crate:
-  `cd /home/aras/development/spotty-triggers/proton-account && cargo test`
-  If the sandbox cannot build it, run it on the host:
-  `flatpak-spawn --host sh -c 'cd /home/aras/development/spotty-triggers/proton-account && cargo test'`
 - Sync this repo into the Spotty checkout:
   `cd /home/aras/development/spotty-triggers && python3 tools/sync_to_spotty.py`
 - Spotty unit tests (host, native Cargo):
-  `flatpak-spawn --host sh -c 'cd /home/aras/development/spotty-triggers/.integration/Spotty && OPENSSL_NO_VENDOR=1 cargo test --bin spotty --features proton-vpn,proton-pass -- proton'`
+  `flatpak-spawn --host sh -c 'cd /home/aras/development/spotty-triggers/.integration/Spotty && OPENSSL_NO_VENDOR=1 cargo test --bin spotty'`
   Plain `cargo test` fails in the Spotty checkout because of a broken example, so
   always use `--bin spotty`.
 - Release build (host, native Cargo):
-  `flatpak-spawn --host sh -c 'cd /home/aras/development/spotty-triggers/.integration/Spotty && OPENSSL_NO_VENDOR=1 cargo build --release --features proton-vpn,proton-pass'`
+  `flatpak-spawn --host sh -c 'cd /home/aras/development/spotty-triggers/.integration/Spotty && OPENSSL_NO_VENDOR=1 cargo build --release'`
 - Manifest and catalog check, install and restart: see `verify-before-push` and
   `build-and-install`.
 
 ## Pointers
 
 - `SOUL.md`: what the project is for, and its non-negotiables.
-- `ARCHITECTURE.md`: repo map, the two checkouts, the trigger flow, the Proton
-  stack, data locations, and known gaps.
+- `ARCHITECTURE.md`: repo map, the two checkouts, the trigger flow,
+  data locations.
 - `CLAUDE.md`: the entry point for Claude Code.
 - Skills in `.claude/skills/`: `build-and-install`, `add-native-trigger`,
-  `proton-integration`, `verify-before-push`.
+  `verify-before-push`.

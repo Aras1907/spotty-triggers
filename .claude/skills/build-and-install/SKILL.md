@@ -21,13 +21,11 @@ can make cargo report "Finished" with a stale binary.
 ## 2. Build on the host
 
 ```sh
-flatpak-spawn --host sh -c 'cd /home/aras/development/spotty-triggers/.integration/Spotty && OPENSSL_NO_VENDOR=1 cargo build --release --features proton-vpn,proton-pass'
+flatpak-spawn --host sh -c 'cd /home/aras/development/spotty-triggers/.integration/Spotty && OPENSSL_NO_VENDOR=1 cargo build --release'
 ```
 
 - The build is slow. Run it in the background (Bash `run_in_background`) and read
   the output when it finishes. A `( ... &)` subshell dies with the tool call.
-- `OPENSSL_NO_VENDOR=1` makes the `proton-pass` build use the system's OpenSSL 3
-  instead of a private copy (see `proton-pass-embedded/README.md`).
 - Success: the output ends with `Finished` and has no `error`.
 
 If the build fails, stop. The running daemon is untouched.

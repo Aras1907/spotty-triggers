@@ -23,8 +23,6 @@ pub mod dictionary;
 pub mod emoji;
 pub mod files;
 pub mod jobs;
-pub mod pass;
-pub mod proton;
 pub mod run;
 pub mod settings_panels;
 pub mod system;
@@ -102,30 +100,6 @@ pub enum Action {
     },
     /// Enter a trigger mode (carries the trigger word, e.g. "files", "pdf").
     EnterMode(String),
-    /// Open Spotty's Proton VPN popup for the installed VPN service.
-    OpenProtonVpn,
-    /// Run an in-app Proton VPN action: `op` is "connect" or "disconnect",
-    /// `target` an encoded [`proton::VpnTarget`].
-    ProtonVpn {
-        op: String,
-        target: String,
-    },
-    /// Hand over a Proton Pass vault item's field (or run a sign-in action):
-    /// `op` is "password", "username", "totp", "card", "cvv", "note",
-    /// "website", "signin" or "refresh"; `target` is `share_id/item_id`.
-    /// Never carries a secret itself.
-    ProtonPass {
-        op: String,
-        target: String,
-    },
-    /// Open one of Spotty's native Proton windows (no web page involved):
-    /// `op` is "calendar" (target `YYYY-MM-DD`, or empty for today), "drive"
-    /// (target a folder id, or empty for My files), "download" (a file id) or
-    /// "settings" (target the service id whose sign-in to show).
-    ProtonNative {
-        op: String,
-        target: String,
-    },
     /// Remove an installed trigger by id.
     UninstallTrigger(String),
     /// Start a long-running package operation in the background. It keeps
@@ -492,8 +466,6 @@ fn regular_trigger_sources(
     for kw in config.command_keywords.iter().chain(owned.iter()) {
         if kw.is_result()
             || matches!(kw.id.as_str(), "clipboard" | "dictionary")
-            // Vault titles never join the everyday search.
-            || kw.id == "proton-pass"
             || !config.keyword_usable(kw)
             || !config.in_regular_search(&kw.id)
         {
@@ -797,18 +769,6 @@ fn search_keyword(
     if kw.id == "bluetooth" {
         return bluetooth::search(rest);
     }
-    if kw.id == "proton-vpn" {
-        return proton::vpn_search(rest, config);
-    }
-    if kw.id == "proton-pass" {
-        return pass::search(rest);
-    }
-    if kw.id == "proton-calendar" {
-        return proton::calendar_search(rest, config);
-    }
-    if kw.id == "proton-drive" {
-        return proton::drive_search(rest, config);
-    }
     if kw.is_result() {
         return result_mode(&kw.id, rest, config, snap_lock);
     }
@@ -946,21 +906,6 @@ mod tests {
             !suggested.iter().any(|r| matches!(&r.action, Action::EnterMode(w) if w.is_empty())),
             "{suggested:?}"
         );
-    }
-
-    #[test]
-    fn installed_vpn_trigger_opens_the_service_popup() {
-        let mut config = Config::default();
-        config.proton_vpn_enabled = true;
-        config.install_builtin("proton-vpn");
-        let snapshot = Arc::new(RwLock::new(crate::index::Snapshot::default()));
-
-        let rows = search_mode("vpn", "", &config, &snapshot);
-        // Connect rows need the embedded client; the window is always offered.
-        assert!(rows.iter().any(|row| matches!(row.action, Action::OpenProtonVpn)));
-
-        config.uninstall_builtin("proton-vpn");
-        assert!(search_mode("vpn", "", &config, &snapshot).is_empty());
     }
 
     /// A config carrying the dictionary keyword (store-installed trigger).

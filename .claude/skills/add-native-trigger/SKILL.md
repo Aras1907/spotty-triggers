@@ -11,12 +11,11 @@ Decide the kind first:
   `index.json` only. No Rust, no Spotty rebuild.
 - **Native** (`"action": {"type": "native"}`): Rust in this repo, then a Spotty
   rebuild. Follow every step below.
-- **Proton** (`proton-*` id): also follow the `proton-integration` skill.
 
 ## 1. Manifest and catalog
 
 Create `triggers/<id>.json`, copying the shape of `triggers/calc.json` (a result
-type) or `triggers/proton-pass.json` (a service, with `"category": "service"`).
+type) or `triggers/emoji.json` (a trigger with its own word).
 Fields: `id` (lowercase letters, digits, `_`, `-`, `.`), `name`, `word` (must not
 collide with a built-in word or another trigger), `description`, `icon`
 (symbolic), `shortcut`, `version`, `author`, `native`, `preinstalled`, `help`,
@@ -27,8 +26,6 @@ Add the same entry to `index.json`, with the same `version`, `native` and
 
 ## 2. Defaults (`src/defaults.rs`)
 
-- Proton integration: add a row to `PROTON_TRIGGERS`, a `display_name` arm, and
-  make `supports_native` return true for it.
 - Other native trigger: `supports_native` and `command_keyword` already read the
   catalog. Add a `display_name` arm, or the name shows as "Trigger".
 - Result type: also add the id to `RESULT_IDS`, `DEFAULT_ORDER`, `result_title`
@@ -53,9 +50,7 @@ Add the same entry to `index.json`, with the same `version`, `native` and
 
 ## 5. Tests, versions, docs
 
-- Unit tests go in the provider module (`#[cfg(test)]`). For a Proton trigger,
-  add a case to `service_tests` in `src/defaults.rs`: `supports_native`, the word,
-  and not preinstalled.
+- Unit tests go in the provider module (`#[cfg(test)]`).
 - Bump `version` in the manifest and in `index.json` together for any behaviour
   change.
 - Add a row to the trigger table in `README.md` for a user-facing trigger. Update

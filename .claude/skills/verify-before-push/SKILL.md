@@ -5,7 +5,7 @@ description: Use before reporting a change as done, before any commit, and befor
 
 # Verify before you report or push
 
-Run the checks that match the change. For a Proton change, run all of them.
+Run the checks that match the change.
 
 ## 1. Review the diff
 
@@ -41,35 +41,25 @@ print("problems:", bad)
 EOF
 ```
 
-## 3. Crate tests
-
-```sh
-cd /home/aras/development/spotty-triggers/proton-account && cargo test
-```
-
-If the sandbox cannot build it, run it on the host:
-`flatpak-spawn --host sh -c 'cd /home/aras/development/spotty-triggers/proton-account && cargo test'`.
-The first build needs network access to Proton's crate registry.
-
-## 4. Sync and Spotty tests
+## 3. Sync and Spotty tests
 
 ```sh
 cd /home/aras/development/spotty-triggers && python3 tools/sync_to_spotty.py
-flatpak-spawn --host sh -c 'cd /home/aras/development/spotty-triggers/.integration/Spotty && OPENSSL_NO_VENDOR=1 cargo test --bin spotty --features proton-vpn,proton-pass -- proton'
+flatpak-spawn --host sh -c 'cd /home/aras/development/spotty-triggers/.integration/Spotty && OPENSSL_NO_VENDOR=1 cargo test --bin spotty'
 ```
 
 Never run plain `cargo test` in the Spotty checkout; a broken example makes it fail.
 
-## 5. Release build and docs
+## 4. Release build and docs
 
 - Run the build step in `build-and-install`. Only a build ending with `Finished` passes.
-- `README.md`: the trigger table and Proton sections match the manifests.
+- `README.md`: the trigger table matches the manifests.
 - `PRIVACY_AND_SECURITY.md`: updated if stored data, network traffic or a secret path changed.
 - `ARCHITECTURE.md` and `AGENTS.md`: updated if a path, file or rule changed.
 
-## 6. Report what you did not run
+## 5. Report what you did not run
 
-Name each check you could not run and why, and what is untested: live Proton,
+Name each check you could not run and why, and what is untested:
 on-screen GTK behaviour, and the Store until the user pushes.
 
 ## Push rule

@@ -9,7 +9,15 @@
     "author": "spotty",
     "shortcut": "Super+Ctrl+F",
     "native": true,
-    "preinstalled": true
+    "preinstalled": true,
+    "long_description": "Finds files and folders by name in the folders Spotty indexes (your home folder by default), and searches inside documents as well: text in PDF and Office files, and text in images through OCR. Enter opens the item. Nothing leaves this computer.",
+    "examples": [
+      "find invoice",
+      "find budget 2026",
+      "find ~/Downloads"
+    ],
+    "network": "",
+    "homepage": "https://github.com/Aras1907/spotty-triggers"
   },
   {
     "id": "clipboard",
@@ -21,7 +29,15 @@
     "author": "spotty",
     "shortcut": "Super+Ctrl+V",
     "native": true,
-    "preinstalled": true
+    "preinstalled": true,
+    "long_description": "Keeps a history of what you copied (text, images and files) and finds an old item by its text. Enter copies it again, and Spotty can paste it into the app you were using.",
+    "examples": [
+      "clip",
+      "clip invoice",
+      "clip https"
+    ],
+    "network": "",
+    "homepage": "https://github.com/Aras1907/spotty-triggers"
   },
   {
     "id": "run",
@@ -33,7 +49,15 @@
     "author": "spotty",
     "shortcut": "Super+Ctrl+T",
     "native": true,
-    "preinstalled": true
+    "preinstalled": true,
+    "long_description": "Runs a shell command you type after the trigger word, through your login shell, and streams its output into the search window. Commands you ran recently come back as suggestions. Commands run with your own permissions, so type only what you would type in a terminal.",
+    "examples": [
+      "cmd uptime",
+      "cmd df -h",
+      "cmd ip addr"
+    ],
+    "network": "",
+    "homepage": "https://github.com/Aras1907/spotty-triggers"
   },
   {
     "id": "emoji",
@@ -45,7 +69,15 @@
     "author": "spotty",
     "shortcut": "Super+Ctrl+E",
     "native": true,
-    "preinstalled": true
+    "preinstalled": true,
+    "long_description": "Finds emoji by name or keyword in a list built into Spotty, so it works offline. Enter copies the emoji you pick to the clipboard.",
+    "examples": [
+      "emoji heart",
+      "emoji rocket",
+      "emoji smile"
+    ],
+    "network": "",
+    "homepage": "https://github.com/Aras1907/spotty-triggers"
   },
   {
     "id": "bluetooth",
@@ -57,7 +89,15 @@
     "author": "spotty",
     "shortcut": "Super+Ctrl+B",
     "native": true,
-    "preinstalled": true
+    "preinstalled": true,
+    "long_description": "Lists your Bluetooth devices through BlueZ (bluetoothctl) and connects, disconnects or pairs them. It can also scan for new devices and switch the adapter on or off. Nothing leaves this computer.",
+    "examples": [
+      "bt",
+      "bt headphones",
+      "bt scan"
+    ],
+    "network": "",
+    "homepage": "https://github.com/Aras1907/spotty-triggers"
   },
   {
     "id": "apps",
@@ -69,7 +109,15 @@
     "author": "spotty",
     "shortcut": "",
     "native": true,
-    "preinstalled": false
+    "preinstalled": false,
+    "long_description": "Finds the apps installed on this computer, from desktop entries and from Flatpak, Snap and AppImage programs, and opens them. It is part of the regular search, and nothing leaves this computer.",
+    "examples": [
+      "firefox",
+      "text editor",
+      "terminal"
+    ],
+    "network": "",
+    "homepage": "https://github.com/Aras1907/spotty-triggers"
   },
   {
     "id": "newapps",
@@ -81,7 +129,15 @@
     "author": "spotty",
     "shortcut": "",
     "native": true,
-    "preinstalled": false
+    "preinstalled": false,
+    "long_description": "Finds apps you can install: from Flathub and the Snap Store, and from your distribution's repositories (dnf or apt). Flathub and the Snap Store are searched over the network, so this needs a connection.",
+    "examples": [
+      "gimp",
+      "obs studio",
+      "vlc"
+    ],
+    "network": "Flathub and the Snap Store",
+    "homepage": "https://github.com/Aras1907/spotty-triggers"
   },
   {
     "id": "web",
@@ -93,7 +149,14 @@
     "author": "spotty",
     "shortcut": "",
     "native": true,
-    "preinstalled": false
+    "preinstalled": false,
+    "long_description": "Opens a web search for what you typed, in your browser, with the search engine you choose in Settings or in a private window. Spotty sends nothing itself: your browser makes the request.",
+    "examples": [
+      "fedora release notes",
+      "weather in zurich"
+    ],
+    "network": "",
+    "homepage": "https://github.com/Aras1907/spotty-triggers"
   },
   {
     "id": "calc",
@@ -105,7 +168,15 @@
     "author": "spotty",
     "shortcut": "",
     "native": true,
-    "preinstalled": false
+    "preinstalled": false,
+    "long_description": "Evaluates arithmetic as you type, with the usual operators, brackets and powers. The result can show thousands grouping and a hex, octal or binary form. Enter copies the result, or pastes it if you choose that in Settings. It runs entirely on this computer.",
+    "examples": [
+      "2 + 3 * 4",
+      "(1200 * 1.19) / 3",
+      "2^10"
+    ],
+    "network": "",
+    "homepage": "https://github.com/Aras1907/spotty-triggers"
   },
   {
     "id": "convert",
@@ -117,19 +188,35 @@
     "author": "spotty",
     "shortcut": "",
     "native": true,
-    "preinstalled": false
+    "preinstalled": false,
+    "long_description": "Converts units of length, mass, volume and more, number bases (hex, octal, binary and decimal), and currencies, typed next to the calculator. Units and bases are computed here. Currency rates are fetched only when a query names money; they are kept in memory for 12 hours and on disk, so conversions still work offline.",
+    "examples": [
+      "10 km to miles",
+      "255 to hex",
+      "20 usd to eur"
+    ],
+    "network": "currency-rate servers (jsDelivr and Cloudflare Pages)",
+    "homepage": "https://github.com/Aras1907/spotty-triggers"
   },
   {
     "id": "updates",
     "name": "System Updates",
     "word": "update",
-    "description": "Search and install system, Flatpak, Snap and AppImage updates with the update trigger",
+    "description": "Search and install system, Flatpak, Snap and AppImage updates",
     "icon": "software-update-available-symbolic",
     "version": "1.0.0",
     "author": "spotty",
     "shortcut": "",
     "native": true,
-    "preinstalled": false
+    "preinstalled": false,
+    "long_description": "Checks for updates to system packages (dnf or apt), Flatpak apps, Snap apps and AppImages, shows what is pending, and installs the ones you choose. Installing uses your system's own authorization prompt, never a password typed into Spotty.",
+    "examples": [
+      "update",
+      "update flatpak",
+      "update system"
+    ],
+    "network": "your distribution's package servers, Flathub and the Snap Store",
+    "homepage": "https://github.com/Aras1907/spotty-triggers"
   },
   {
     "id": "dictionary",
@@ -139,81 +226,31 @@
     "icon": "accessories-dictionary-symbolic",
     "version": "1.0.0",
     "author": "spotty",
-    "shortcut": ""
+    "shortcut": "",
+    "long_description": "Looks up an English word as you type and shows a short definition, from the free dictionaryapi.dev and Wiktionary services, with word suggestions from Datamuse. Enter opens the full entry on dictionary.com.",
+    "examples": [
+      "dict serendipity",
+      "dict ephemeral",
+      "dict lucid"
+    ],
+    "network": "dictionaryapi.dev, Wiktionary and Datamuse",
+    "homepage": "https://github.com/Aras1907/spotty-triggers"
   },
   {
     "id": "translate",
     "name": "Translate",
     "word": "translate",
-    "description": "Translate text locally \u2014 detects the language, targets your system language",
+    "description": "Translate text locally — detects the language, targets your system language",
     "icon": "tools-check-spelling-symbolic",
     "version": "1.1.0",
     "author": "spotty",
-    "shortcut": ""
-  },
-  {
-    "id": "proton-bridge",
-    "name": "Proton Mail Bridge",
-    "word": "",
-    "description": "Local mail server with Proton login and mail-client credentials",
-    "icon": "mail-send-receive-symbolic",
-    "version": "1.3.1",
-    "author": "spotty",
     "shortcut": "",
-    "native": true,
-    "preinstalled": false,
-    "category": "service"
-  },
-  {
-    "id": "proton-vpn",
-    "name": "Proton VPN",
-    "word": "vpn",
-    "description": "Proton VPN built into Spotty: sign in, pick a country and connect",
-    "icon": "network-vpn-symbolic",
-    "version": "2.2.0",
-    "author": "spotty",
-    "shortcut": "",
-    "native": true,
-    "preinstalled": false,
-    "category": "service"
-  },
-  {
-    "id": "proton-pass",
-    "name": "Proton Pass",
-    "word": "pass",
-    "description": "Proton Pass built into Spotty: search your vault and copy passwords, usernames and one-time codes",
-    "icon": "dialog-password-symbolic",
-    "version": "1.3.0",
-    "author": "spotty",
-    "shortcut": "",
-    "native": true,
-    "preinstalled": false,
-    "category": "service"
-  },
-  {
-    "id": "proton-calendar",
-    "name": "Proton Calendar",
-    "word": "cal",
-    "description": "Proton Calendar built into Spotty: sign in natively, see what is coming up, jump to any day",
-    "icon": "x-office-calendar-symbolic",
-    "version": "2.1.0",
-    "author": "spotty",
-    "shortcut": "",
-    "native": true,
-    "preinstalled": false,
-    "category": "service"
-  },
-  {
-    "id": "proton-drive",
-    "name": "Proton Drive",
-    "word": "drive",
-    "description": "Proton Drive built into Spotty: sign in natively, search and browse My files, download with Enter",
-    "icon": "folder-remote-symbolic",
-    "version": "2.1.0",
-    "author": "spotty",
-    "shortcut": "",
-    "native": true,
-    "preinstalled": false,
-    "category": "service"
+    "long_description": "Translates text as you type. The language is detected automatically and the result is shown in your system language. The text goes only to the LibreTranslate server in your settings, which runs on this computer by default. Enter copies the translation.",
+    "examples": [
+      "translate hello",
+      "translate hello po"
+    ],
+    "network": "your LibreTranslate server (this computer by default)",
+    "homepage": "https://github.com/Aras1907/spotty-triggers"
   }
 ]

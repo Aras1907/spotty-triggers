@@ -141,8 +141,6 @@ pub struct PreviewPane {
     u_title: gtk::Label,
     u_sub: gtk::Label,
     u_list: gtk::ListBox,
-    // A Proton Pass item: its fields are held only while the pane shows them.
-    pass: crate::ui::proton_pass_preview::PassPreview,
     // Identity of the track currently shown in the music page, so late async
     // cover/stats updates can verify they're still relevant.
     msel: std::rc::Rc<std::cell::RefCell<String>>,
@@ -482,10 +480,6 @@ impl PreviewPane {
             .build();
         stack.add_named(&u_scroll, Some("update"));
 
-        // A Proton Pass item (its own page: it fetches and wipes its fields).
-        let pass = crate::ui::proton_pass_preview::PassPreview::new();
-        stack.add_named(&pass.widget(), Some("pass"));
-
         let clip_caption = gtk::Label::builder()
             .css_classes(["caption", "dim-label"])
             .halign(gtk::Align::Start)
@@ -550,7 +544,6 @@ impl PreviewPane {
             u_title,
             u_sub,
             u_list,
-            pass,
             msel: std::rc::Rc::new(std::cell::RefCell::new(String::new())),
             current: std::rc::Rc::new(std::cell::RefCell::new(std::path::PathBuf::new())),
             preview_debounce_id: std::rc::Rc::new(std::cell::Cell::new(None)),
@@ -614,7 +607,6 @@ impl PreviewPane {
     }
     pub fn clear(&self) {
         self.stop_video();
-        self.pass.forget();
         *self.msel.borrow_mut() = String::new();
         self.displayed.set(false);
         self.pending.set(false);
@@ -697,18 +689,6 @@ impl PreviewPane {
         self.u_list.set_visible(!packages.is_empty());
 
         self.stack.set_visible_child_name("update");
-    }
-
-    /// Show a Proton Pass item (`share_id/item_id`): its fields are fetched while
-    /// the pane is on screen, and wiped when it is not.
-    pub fn show_pass(&self, target: &str) {
-        self.metadata_box.set_visible(false);
-        self.stop_video();
-        self.current_stamp.set((0, 0));
-        *self.current.borrow_mut() = std::path::PathBuf::new();
-        self.displayed.set(true);
-        self.stack.set_visible_child_name("pass");
-        self.pass.show(target);
     }
 
     /// Show trigger help: instruction text, plus the help_image screenshot
