@@ -366,6 +366,9 @@ fn run_task(id: u64, args: &[String]) {
                 } else {
                     log::info!("task failed: {e}");
                     finish(id, State::Failed);
+                    // Show the service's reason instead of hiding it behind
+                    // a generic failure after the transaction ends.
+                    task.status(&e);
                 }
             }
         }
@@ -899,7 +902,11 @@ fn finish(id: u64, state: State) {
             }
             op.state = state;
             let done = matches!(state, State::Done);
-            was_update = done && crate::search::cmd::is_update_op(&op.args);
+            // A combined run may update some sources before another fails.
+            // Recheck the inventory for either outcome so completed packages
+            // don't remain in the cached pending list.
+            was_update = matches!(state, State::Done | State::Failed)
+                && crate::search::cmd::is_update_op(&op.args);
             // Arming an already-downloaded update changes what the reboot row
             // has to say ("this restart installs them"), so it needs the same
             // re-probe an update run gets — without pretending to be one.

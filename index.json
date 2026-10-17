@@ -24,18 +24,6 @@
     "preinstalled": true
   },
   {
-    "id": "cmd",
-    "name": "App Management",
-    "word": "app",
-    "description": "Install, uninstall, and manage apps",
-    "icon": "application-x-executable-symbolic",
-    "version": "1.0.0",
-    "author": "spotty",
-    "shortcut": "Super+Ctrl+A",
-    "native": true,
-    "preinstalled": true
-  },
-  {
     "id": "run",
     "name": "Command",
     "word": "cmd",

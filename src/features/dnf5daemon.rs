@@ -105,8 +105,6 @@ impl OfflineStatus {
 pub struct Session {
     conn: gio::DBusConnection,
     path: String,
-    /// Released on drop so a panic can't leave a session behind.
-    closer: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Session {
@@ -127,25 +125,7 @@ impl Session {
             .child_value(0)
             .get::<String>()
             .ok_or_else(|| "open_session: no session path".to_string())?;
-        let closer = {
-            let conn = conn.clone();
-            let path = path.clone();
-            std::thread::spawn(move || {
-                let _ = dbus_call(
-                    &conn,
-                    ROOT_PATH,
-                    SESSION_MANAGER,
-                    "close_session",
-                    Some(Variant::tuple_from_iter([Variant::from(path.as_str())])),
-                    CALL_TIMEOUT_MS,
-                );
-            })
-        };
-        Ok(Session {
-            conn,
-            path,
-            closer: Some(closer),
-        })
+        Ok(Session { conn, path })
     }
 
     fn call(
@@ -263,9 +243,20 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        if let Some(handle) = self.closer.take() {
-            let _ = handle.join();
-        }
+        // Keep the session alive for every call in the transaction. Only
+        // release it once its owner is done, without blocking the GTK thread.
+        let conn = self.conn.clone();
+        let path = self.path.clone();
+        std::thread::spawn(move || {
+            let _ = dbus_call(
+                &conn,
+                ROOT_PATH,
+                SESSION_MANAGER,
+                "close_session",
+                Some(Variant::tuple_from_iter([Variant::from(path.as_str())])),
+                CALL_TIMEOUT_MS,
+            );
+        });
     }
 }
 
@@ -431,30 +422,29 @@ pub fn is_schedule_task(args: &[String]) -> bool {
 /// The `Err(String)` is user-facing wording — the daemon's, or polkit's — so
 /// the failure surfaces in the row instead of only in the log.
 pub fn run_task(args: &[String], task: &TaskHandle) -> Result<(), String> {
-    let verb = args.get(1).map(String::as_str).unwrap_or("");
+    // The operation dispatcher already removed the ARGV0 sentinel.
+    let verb = args.first().map(String::as_str).unwrap_or("");
+    // Opening the system service can fail too; still run the other sources
+    // in an "all" operation before reporting that failure.
+    if verb == VERB_ALL {
+        let distro = Session::open().and_then(|session| session.upgrade_offline(&[], task));
+        let others = args.get(1).map(|script| run_script(script, task));
+        distro?;
+        return match others {
+            Some(false) => Err("Some of the updates did not install".into()),
+            _ => Ok(()),
+        };
+    }
     let session = Session::open()?;
     match verb {
         VERB_UPGRADE_ALL => session.upgrade_offline(&[], task),
         VERB_UPGRADE_PKG => {
-            let spec = args.get(2).cloned().unwrap_or_default();
+            let spec = args.get(1).cloned().unwrap_or_default();
             session.upgrade_offline(&[spec], task)
         }
         VERB_SCHEDULE => {
             task.status("Scheduling updates for the next restart");
             session.schedule()
-        }
-        // The daemon does the distro half, then a shell script runs the rest:
-        // flatpak/pacman/snap/AppImage are all still separate programs. Both
-        // halves are attempted, and a failure in either is reported.
-        VERB_ALL => {
-            let script = args.get(2);
-            let distro = session.upgrade_offline(&[], task);
-            let others = script.map(|s| run_script(s, task));
-            distro?;
-            match others {
-                Some(false) => Err("Some of the updates did not install".into()),
-                _ => Ok(()),
-            }
         }
         other => Err(format!("Unknown dnf5daemon task \"{other}\"")),
     }

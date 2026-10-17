@@ -787,6 +787,25 @@ pub fn update_shell_cmd(path: &Path) -> Option<String> {
     ))
 }
 
+/// Recheck every discovered AppImage during an all-source update, rather
+/// than limiting the run to files in the earlier pending-update preview.
+/// The updater's check returns 1 for an available update; other files may
+/// have no embedded update information and are left alone.
+pub fn all_update_shell_cmds() -> Vec<String> {
+    let Some(tool) = updater_cmd() else {
+        return Vec::new();
+    };
+    let tool_path = PathBuf::from(&tool);
+    let quoted_tool = shell_quote(&tool);
+    try_discovered().unwrap_or_default().iter()
+        .filter(|ai| ai.path != tool_path && alive(&ai.path))
+        .map(|ai| {
+            let path = shell_quote(&ai.path.to_string_lossy());
+            format!("{quoted_tool} -j {path}; ai_status=$?; if [ \"$ai_status\" -eq 1 ]; then {quoted_tool} --overwrite {path}; fi")
+        })
+        .collect()
+}
+
 // ── Update checks ────────────────────────────────────────────────────────────
 
 /// `-j` exits 1 when an update is available, 0 when current; any other

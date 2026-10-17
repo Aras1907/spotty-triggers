@@ -58,7 +58,6 @@ pub fn display_name(id: &str) -> &'static str {
         match id {
             "files" => "Find",
             "clipboard" => "Clip",
-            "cmd" => "App",
             "run" => "Cmd",
             "emoji" => "Emoji",
             "music" => "Music",

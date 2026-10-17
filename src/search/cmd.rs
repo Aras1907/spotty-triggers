@@ -1,8 +1,8 @@
-// CMD trigger mode: kill running processes, install/uninstall/search Flatpak+distro apps.
-// Suggestions are built from async-fetched caches so the UI never blocks.
+// App sources and updates: the Flatpak/distro/Snap catalogs behind "Search for
+// new Apps", and the update checks behind "Updates". Rows are built from
+// async-fetched caches so the UI never blocks.
 
 use crate::config::{AppSources, Config};
-use crate::index::AppEntry;
 use crate::search::{Action, ResultKind, SearchResult};
 use crate::i18n::gettext;
 use gtk::glib;
@@ -73,25 +73,6 @@ impl DistroPackage {
 }
 
 // ── Thread-safe caches ────────────────────────────────────────────────────────
-
-fn process_cache() -> &'static Mutex<Option<(Instant, Vec<String>)>> {
-    static C: OnceLock<Mutex<Option<(Instant, Vec<String>)>>> = OnceLock::new();
-    C.get_or_init(|| Mutex::new(None))
-}
-fn process_fetching() -> &'static Mutex<bool> {
-    static C: OnceLock<Mutex<bool>> = OnceLock::new();
-    C.get_or_init(|| Mutex::new(false))
-}
-
-// Running Flatpak app-ids (from `flatpak ps`), refreshed alongside `ps`.
-fn flatpak_running_cache() -> &'static Mutex<Option<(Instant, Vec<String>)>> {
-    static C: OnceLock<Mutex<Option<(Instant, Vec<String>)>>> = OnceLock::new();
-    C.get_or_init(|| Mutex::new(None))
-}
-fn flatpak_running_fetching() -> &'static Mutex<bool> {
-    static C: OnceLock<Mutex<bool>> = OnceLock::new();
-    C.get_or_init(|| Mutex::new(false))
-}
 
 fn installed_cache() -> &'static Mutex<Option<(Instant, Vec<FlatpakApp>)>> {
     static C: OnceLock<Mutex<Option<(Instant, Vec<FlatpakApp>)>>> = OnceLock::new();
@@ -400,17 +381,7 @@ pub(crate) fn flatpak_is_available() -> Option<bool> {
     flatpak_available_cache().lock().ok().and_then(|g| *g)
 }
 
-/// The detected distro package manager name ("dnf", "apt", …), if any —
-/// gates the "System packages" source switch in Settings.
-pub(crate) fn detected_distro_pm() -> Option<String> {
-    get_detected_pm()
-}
-
 // ── Background fetchers ───────────────────────────────────────────────────────
-
-pub fn prewarm_update_cache() {
-    ensure_updates_checked();
-}
 
 pub fn preload_install_cache_async(sources: AppSources) {
     // Source presence is always probed (not just when the saved switches use
@@ -429,62 +400,6 @@ pub fn preload_install_cache_async(sources: AppSources) {
             ensure_distro_catalog(pm_name);
         }
     }
-}
-
-fn ensure_processes() {
-    {
-        let c = process_cache().lock().unwrap();
-        if let Some((t, _)) = c.as_ref() {
-            if t.elapsed() < Duration::from_secs(3) {
-                return;
-            }
-        }
-    }
-    {
-        let mut f = process_fetching().lock().unwrap();
-        if *f {
-            return;
-        }
-        *f = true;
-    }
-    {
-        let mut f = flatpak_running_fetching().lock().unwrap();
-        *f = true;
-    }
-    std::thread::spawn(|| {
-        let raw = host_command("ps")
-            .args(["-eo", "comm", "--no-headers"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default();
-        let mut names: Vec<String> = raw
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|s| !s.is_empty() && s != "ps" && s != "flatpak-spawn")
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-        names.sort();
-        *process_cache().lock().unwrap() = Some((Instant::now(), names));
-        *process_fetching().lock().unwrap() = false;
-
-        let raw = host_command("flatpak")
-            .args(["ps", "--columns=application"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default();
-        let ids: Vec<String> = raw
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-        *flatpak_running_cache().lock().unwrap() = Some((Instant::now(), ids));
-        *flatpak_running_fetching().lock().unwrap() = false;
-
-        glib::MainContext::default().invoke(crate::app::refresh_search_window);
-    });
 }
 
 fn ensure_installed() {
@@ -555,7 +470,10 @@ pub fn update_verb_rows(query: &str, config: &Config) -> Option<Vec<SearchResult
     if !exact && !prefix && !typo {
         return None;
     }
-    let score = if rest.is_empty() { 100_000 } else { 50_000 };
+    // Once the user has specified a target (including a target supplied as
+    // ghost text), put that requested update ahead of the generic reboot row.
+    // Otherwise a pending offline restart can outrank e.g. "update all".
+    let score = if rest.is_empty() { 100_000 } else { 110_000 };
     let mut rows = update_results(rest, config);
     // Boost the actual update rows above incidental matches; leave the
     // "disable update checks" tail row where it belongs.
@@ -563,6 +481,19 @@ pub fn update_verb_rows(query: &str, config: &Config) -> Option<Vec<SearchResult
         if r.score >= 1000 {
             r.score = r.score.max(score);
         }
+    }
+    // Preserve this order through universal_results' stronger source ranking:
+    // it promotes update rows by their vector position. A target named in the
+    // query therefore has to move ahead of general notices (for example, a
+    // pending reboot) here, before that promotion runs.
+    if !rest.is_empty() {
+        let target = rest.to_lowercase();
+        rows.sort_by_key(|row| {
+            query_for(&row.title)
+                .and_then(|q| q.split_once(char::is_whitespace).map(|(_, target)| target.to_lowercase()))
+                .map(|candidate| !candidate.starts_with(&target))
+                .unwrap_or(true)
+        });
     }
     Some(rows)
 }
@@ -708,44 +639,21 @@ fn update_cmd_args(source: &str, app_id: Option<&str>) -> Vec<String> {
             }
         }
         "all" => {
-            let mut parts: Vec<(&str, String)> = Vec::new();
-            let mut has_distro = false;
-            let cache = update_cache().lock().unwrap();
-            if let Some((_, entries)) = cache.as_ref() {
-                let has_fp = entries
-                    .iter()
-                    .any(|u| u.source == "flatpak");
-                if has_fp {
-                    parts.push(("flatpak", "flatpak update --assumeyes".into()));
-                }
-                // Distro packages go through a system service only — an
-                // in-process D-Bus task, not a shell command, so it can't join
-                // the chain below.
-                has_distro = entries.iter().any(|u| is_distro_source(&u.source));
-                if entries.iter().any(|u| u.source == "snap") {
-                    parts.push(("snap", "pkexec snap refresh".into()));
-                }
-                // AppImage updates always come last: they run unprivileged
-                // and in place (no pkexec involved).
-                for u in entries.iter().filter(|u| u.source == "appimage") {
-                    if let Some(p) = &u.app_id {
-                        if let Some(cmd) =
-                            crate::search::appimage::update_shell_cmd(std::path::Path::new(p))
-                        {
-                            parts.push(("appimage", cmd));
-                        }
-                    }
-                }
+            // Query installed sources when the operation runs. The preview
+            // cache may be old or incomplete and must not limit an all update.
+            let mut parts: Vec<(&str, String)> = vec![
+                ("flatpak", "if command -v flatpak >/dev/null 2>&1; then flatpak update --assumeyes; fi".into()),
+                ("snap", "if command -v snap >/dev/null 2>&1; then pkexec snap refresh; fi".into()),
+            ];
+            // AppImages recheck each discovered file at execution time too.
+            for cmd in crate::search::appimage::all_update_shell_cmds() {
+                parts.push(("appimage", cmd));
             }
-            drop(cache);
             // The daemon half runs first (it installs at the next restart,
             // the rest install immediately), so the chain follows it as the
             // task's script argument.
-            let door = if has_distro { system_door() } else { None };
-            let via_daemon = door.is_some();
-            if parts.is_empty() && !via_daemon {
-                no_updates_cmd()
-            } else if let Some(door) = door {
+            let door = system_door();
+            if let Some(door) = door {
                 let script = chained_script_text(&parts);
                 match door {
                     Door::Dnf5Daemon => crate::dnf5daemon::all_args(&script),
@@ -897,7 +805,8 @@ fn assemble_updates(
 }
 
 fn fetch_flatpak_updates() -> Vec<(String, String)> {
-    // --user and --system in parallel too.
+    // Include runtimes and extensions as well as apps; runtime-only updates
+    // must enable the update action too. Check both installations in parallel.
     let raws: Vec<String> = std::thread::scope(|s| {
         let handles: Vec<_> = ["--user", "--system"]
             .iter()
@@ -909,7 +818,6 @@ fn fetch_flatpak_updates() -> Vec<(String, String)> {
                             scope,
                             "remote-ls",
                             "--updates",
-                            "--app",
                             "--columns=application,name",
                         ])
                         .output()
@@ -1478,40 +1386,6 @@ fn fetch_snap_installed() -> Vec<DistroPackage> {
 /// catalogs while still catching most plausible typos.
 const FUZZY_SCAN_CAP: usize = 4000;
 
-fn fuzzy_strings<'a>(query: &str, items: &'a [String]) -> Vec<(&'a String, u32)> {
-    if query.is_empty() {
-        return items.iter().take(10).map(|s| (s, 1000)).collect();
-    }
-    let ql = query.to_lowercase();
-    let mut matcher = Matcher::default();
-    let pattern = Pattern::parse(&ql, CaseMatching::Ignore, Normalization::Smart);
-    let mut scored: Vec<(&String, u32)> = items
-        .iter()
-        .filter_map(|s| {
-            let sl = s.to_lowercase();
-            let score = if sl == ql {
-                100_000
-            } else if sl.starts_with(&ql) {
-                50_000
-            } else if sl.contains(&ql) {
-                30_000
-            } else {
-                let fs = pattern.score(Utf32String::from(s.as_str()).slice(..), &mut matcher)?;
-                let threshold = (ql.len() as u32).saturating_mul(20);
-                if fs >= threshold {
-                    fs
-                } else {
-                    return None;
-                }
-            };
-            Some((s, score))
-        })
-        .collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
-    scored.truncate(20);
-    scored
-}
-
 fn fuzzy_apps<'a>(query: &str, items: &'a [FlatpakApp]) -> Vec<(&'a FlatpakApp, u32)> {
     let ql = query.trim().to_lowercase();
     if ql.is_empty() {
@@ -1631,46 +1505,6 @@ fn fuzzy_distro<'a>(query: &str, items: &'a [DistroPackage]) -> Vec<(&'a DistroP
 
 // ── Template list ─────────────────────────────────────────────────────────────
 
-fn templates() -> Vec<SearchResult> {
-    // Running operations (live loading bars) sit at the very top.
-    let mut v = crate::operations::running_result_rows();
-    v.extend([
-        SearchResult {
-            kind: ResultKind::System,
-            title: gettext("Kill").into(),
-            subtitle: Some(gettext("kill <app-name>  —  stop a running process").into()),
-            icon: Some("process-stop-symbolic".into()),
-            action: Action::EnterMode("cmd".into()),
-            score: 1000,
-        },
-        SearchResult {
-            kind: ResultKind::System,
-            title: gettext("Install").into(),
-            subtitle: Some(gettext("install <app>  —  install from Flatpak, distro, or Snap").into()),
-            icon: Some("package-x-generic-symbolic".into()),
-            action: Action::EnterMode("cmd".into()),
-            score: 999,
-        },
-        SearchResult {
-            kind: ResultKind::System,
-            title: gettext("Uninstall").into(),
-            subtitle: Some(gettext("uninstall <app>  —  remove an installed app").into()),
-            icon: Some("edit-delete-symbolic".into()),
-            action: Action::EnterMode("cmd".into()),
-            score: 998,
-        },
-        SearchResult {
-            kind: ResultKind::System,
-            title: gettext("Update").into(),
-            subtitle: Some(gettext("update  —  update installed packages").into()),
-            icon: Some("software-update-available-symbolic".into()),
-            action: Action::EnterMode("cmd".into()),
-            score: 997,
-        },
-    ]);
-    v
-}
-
 fn searching_placeholder(label: &str) -> Vec<SearchResult> {
     vec![SearchResult {
         kind: ResultKind::System,
@@ -1683,178 +1517,6 @@ fn searching_placeholder(label: &str) -> Vec<SearchResult> {
 }
 
 // ── Main search ───────────────────────────────────────────────────────────────
-
-pub fn search(query: &str, config: &Config, apps: &[AppEntry]) -> Vec<SearchResult> {
-    let sources = config.app_sources();
-    // Kick off distro PM detection early so it's ready when needed
-
-    let q = query.trim();
-    if q.is_empty() {
-        return templates();
-    }
-    let ql = q.to_lowercase();
-
-    let (verb, rest) = match ql.find(' ') {
-        Some(i) => (ql[..i].to_string(), ql[i + 1..].trim().to_string()),
-        None => (ql.clone(), String::new()),
-    };
-
-    // ── Synonym suggestions ───────────────────────────────────────────────────
-    // Words like "add"/"remove"/"delete"/"stop" mean the same thing as
-    // install/uninstall/kill but aren't recognized verbs themselves. Suggest
-    // the matching action template so the user can press Enter to autofill
-    // the canonical action word and continue typing the app name.
-    if rest.is_empty() {
-        let suggestion = match verb.as_str() {
-            "add" | "get" | "download" => Some((
-                "Install",
-                "install <app-name>  —  searches Flatpak, distro and Snap",
-                "package-x-generic-symbolic",
-            )),
-            "remove" | "delete" | "del" | "erase" | "rem" => Some((
-                "Uninstall",
-                "uninstall <app-name>  —  remove an installed app",
-                "edit-delete-symbolic",
-            )),
-            "stop" | "end" | "terminate" | "close" => Some((
-                "Kill",
-                "kill <app-name>  —  stop a running process",
-                "process-stop-symbolic",
-            )),
-            "upgrade" | "up" => Some((
-                "Update",
-                "update  —  check for & install package updates",
-                "software-update-available-symbolic",
-            )),
-            _ => None,
-        };
-        if let Some((title, sub, icon)) = suggestion {
-            let mut results = vec![SearchResult {
-                kind: ResultKind::System,
-                title: title.into(),
-                subtitle: Some(sub.into()),
-                icon: Some(icon.into()),
-                action: Action::EnterMode("cmd".into()),
-                score: 1000,
-            }];
-            results.extend(crate::operations::running_result_rows());
-            return results;
-        }
-    }
-
-    // ── Kill ──────────────────────────────────────────────────────────────────
-    // Restricted to running processes that correspond to indexed (visible) apps —
-    // never arbitrary system processes.
-    // Only act on these verbs once the action word has been fully typed
-    // ("kill"/"install"/"uninstall") or accepted via autocomplete (which always
-    // expands to the canonical word + a space). A bare alias with nothing after
-    // it (e.g. just "k") falls through to the template list instead of jumping
-    // straight to recommendations.
-    if verb == "kill" || (matches_verb(&verb, &["kill", "k", "stop"]) && !rest.is_empty()) {
-        ensure_processes();
-        let cache = process_cache().lock().unwrap();
-        let Some((_, names)) = cache.as_ref() else {
-            drop(cache);
-            return searching_placeholder(&gettext("Scanning running processes…"));
-        };
-        let names = names.clone();
-        drop(cache);
-        let flatpak_ids = flatpak_running_cache()
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|(_, ids)| ids.clone())
-            .unwrap_or_default();
-        let running = running_apps(&names, &flatpak_ids, apps);
-        if rest.is_empty() {
-            return running
-                .iter()
-                .take(10)
-                .map(|(name, target)| kill_result(name, target))
-                .collect();
-        }
-        let display_names: Vec<String> = running.iter().map(|(name, _)| name.clone()).collect();
-        let matches = fuzzy_strings(&rest, &display_names);
-        if matches.is_empty() {
-            return vec![SearchResult {
-                kind: ResultKind::System,
-                title: gettext("No running app matching \"{query}\"").replace("{query}", &rest),
-                subtitle: Some(gettext("Only running apps can be killed").into()),
-                icon: Some("process-stop-symbolic".into()),
-                action: Action::EnterMode("cmd".into()),
-                score: 0,
-            }];
-        }
-        return matches
-            .iter()
-            .filter_map(|(name, _)| {
-                running
-                    .iter()
-                    .find(|(n, _)| n == *name)
-                    .map(|(n, p)| kill_result(n, p))
-            })
-            .collect();
-    }
-
-    // ── Uninstall (fully-spelled verb) ────────────────────────────────────
-    // Matched before Install on purpose: matches_verb() fuzzy-rates
-    // edit_distance("uninstall", "install") == 2 as a match, so the install
-    // branch checked first would steal the canonical "uninstall <app>" query
-    // and offer to install the app the user is trying to remove.
-    if verb == "uninstall" {
-        // Surface any running operation's live loading bar above the results.
-        let mut results = search_uninstall(&rest, sources.appimage);
-        results.extend(crate::operations::running_result_rows());
-        return results;
-    }
-
-    // ── Install ───────────────────────────────────────────────────────────────
-    if verb == "install"
-        || (matches_verb(&verb, &["install", "ins", "add", "i"]) && !rest.is_empty())
-    {
-        // While an install/uninstall is in flight, surface its live loading bar
-        // above the search results so the user sees it's already running.
-        let mut results = search_install(&rest, sources);
-        results.extend(crate::operations::running_result_rows());
-        return results;
-    }
-
-    // ── Uninstall (fuzzy verbs: "remove", "rem", "del", typos …) ──────────
-    if matches_verb(&verb, &["uninstall", "remove", "rem", "uninst", "del"])
-        && !rest.is_empty()
-    {
-        // Surface any running operation's live loading bar above the results.
-        let mut results = search_uninstall(&rest, sources.appimage);
-        results.extend(crate::operations::running_result_rows());
-        return results;
-    }
-
-    // ── Update ─────────────────────────────────────────────────────────────────
-    if verb == "update"
-        || (matches_verb(&verb, &["update", "upgrade", "up"]) && !rest.is_empty())
-    {
-        let mut results = search_updates(&rest, config);
-        results.extend(crate::operations::running_result_rows());
-        return results;
-    }
-
-    // ── Fuzzy fallback across template titles ─────────────────────────────────
-    let mut matcher = Matcher::default();
-    let pattern = Pattern::parse(&ql, CaseMatching::Ignore, Normalization::Smart);
-    let mut out: Vec<SearchResult> = templates()
-        .into_iter()
-        .filter(|r| {
-            let tl = r.title.to_lowercase();
-            tl.contains(&ql)
-                || pattern
-                    .score(Utf32String::from(r.title.as_str()).slice(..), &mut matcher)
-                    .map(|s| s >= (ql.len() as u32).saturating_mul(25))
-                    .unwrap_or(false)
-        })
-        .collect();
-    out.truncate(4);
-    out
-}
 
 // Search for apps to install across Flatpak and/or distro PM.
 fn search_install(query: &str, sources: AppSources) -> Vec<SearchResult> {
@@ -2027,112 +1689,6 @@ pub fn universal_install(query: &str, sources: AppSources, limit: usize) -> Vec<
     out
 }
 
-// Search for installed apps to uninstall across the package sources.
-// Unlike installing, the package managers always both get consulted — the
-// user can remove anything actually installed — but AppImage removal
-// respects its source switch like the launch rows do (it's a search
-// feature, not a system inventory).
-fn search_uninstall(query: &str, appimage: bool) -> Vec<SearchResult> {
-    let detected = get_detected_pm();
-    let use_flatpak = true;
-    let use_distro = detected.is_some();
-    let use_snap = snap_is_available() == Some(true);
-
-    let mut results: Vec<SearchResult> = Vec::new();
-    let mut loading = false;
-
-    if use_flatpak {
-        ensure_installed();
-        let cache = installed_cache().lock().unwrap();
-        match cache.as_ref() {
-            None => {
-                loading = true;
-            }
-            Some((_, apps)) => {
-                if query.is_empty() {
-                    results.extend(apps.iter().take(8).map(|app| uninstall_result(app)));
-                } else {
-                    let matches = fuzzy_apps(query, apps);
-                    results.extend(matches.iter().map(|(app, _)| uninstall_result(app)));
-                }
-            }
-        }
-    }
-
-    if use_distro {
-        let pm_name = detected.as_deref().unwrap_or("");
-        ensure_distro_installed(pm_name.to_string());
-        let cache = distro_installed_cache().lock().unwrap();
-        match cache.as_ref() {
-            None => {
-                loading = true;
-            }
-            Some((_, pkgs)) => {
-                if query.is_empty() {
-                    results.extend(
-                        pkgs.iter()
-                            .take(4)
-                            .map(|pkg| distro_uninstall_result(pkg, pm_name)),
-                    );
-                } else {
-                    let matches = fuzzy_distro(query, pkgs);
-                    results.extend(
-                        matches
-                            .iter()
-                            .map(|(pkg, _)| distro_uninstall_result(pkg, pm_name)),
-                    );
-                }
-            }
-        }
-    }
-
-    if use_snap {
-        ensure_snap_installed();
-        let cache = snap_installed_cache().lock().unwrap();
-        match cache.as_ref() {
-            None => {
-                loading = true;
-            }
-            Some((_, pkgs)) => {
-                if query.is_empty() {
-                    results.extend(pkgs.iter().take(4).map(snap_uninstall_result));
-                } else {
-                    let matches = fuzzy_distro(query, pkgs);
-                    results.extend(
-                        matches.iter().map(|(pkg, _)| snap_uninstall_result(pkg)),
-                    );
-                }
-            }
-        }
-    }
-
-    if appimage {
-        if crate::search::appimage::discovery_pending() {
-            loading = true;
-        }
-        results.extend(crate::search::appimage::remove_rows(query));
-    }
-
-    if results.is_empty() && loading {
-        return searching_placeholder(&gettext("Scanning installed apps…"));
-    }
-
-    if results.is_empty() {
-        return vec![SearchResult {
-            kind: ResultKind::System,
-            title: gettext("No installed app matching \"{query}\"").replace("{query}", query),
-            subtitle: Some(gettext("Check spelling or try fewer characters").into()),
-            icon: Some("edit-delete-symbolic".into()),
-            action: Action::EnterMode("cmd".into()),
-            score: 0,
-        }];
-    }
-
-    results.sort_by(|a, b| b.score.cmp(&a.score));
-    results.truncate(20);
-    results
-}
-
 // ── Software update search ────────────────────────────────────────────────────
 
 pub fn update_results(query: &str, config: &Config) -> Vec<SearchResult> {
@@ -2154,22 +1710,24 @@ fn search_updates(query: &str, config: &Config) -> Vec<SearchResult> {
         .ok()
         .and_then(|g| g.clone())
         .map(|(_, v)| v);
+    // Once the probe confirms a reboot is pending — including right after a
+    // finished update asked for one — the restart is the only thing left to
+    // do: every update query ("update", "update all", "update firefox") offers
+    // just that, no further update rows. It is never offered just because
+    // updates exist: those are installed first (see the scope/package rows
+    // below), and only a finished run can put the machine in this state.
+    if reboot_pending() {
+        let mut out = vec![restart_required_row()];
+        // A downloaded-but-unarmed offline transaction: a restart alone
+        // wouldn't install it, so offer to arm it — through the daemon, the
+        // only door.
+        if offline_update_staged() && system_door().is_some() {
+            out.push(staged_update_now_row());
+        }
+        return out;
+    }
     let mut out: Vec<SearchResult> = Vec::new();
     let rest = query.trim();
-    // The restart row sits on top whenever the probe confirms a reboot is
-    // pending — including right after a finished update asked for one. It is
-    // never offered just because updates exist: those are installed first (see
-    // the scope/package rows below), and only a finished run can put the
-    // machine in the state that needs a restart. Targeted subqueries
-    // ("update firefox") keep their own rows first.
-    if reboot_pending() {
-        out.push(restart_required_row());
-    }
-    // A downloaded-but-unarmed offline transaction: a restart alone wouldn't
-    // install it, so offer to arm it — through the daemon, the only door.
-    if offline_update_staged() && system_door().is_some() {
-        out.push(staged_update_now_row());
-    }
     let rl = rest.to_lowercase();
     if *update_fetching().lock().unwrap() || updates.is_none() {
         out.push(check_now_row(
@@ -2687,90 +2245,6 @@ fn check_now_row(title: String, subtitle: String, icon: &str) -> SearchResult {
 
 // ── Result builders ───────────────────────────────────────────────────────────
 
-// What to kill: a regular host process (matched by name via pkill), or a
-// running Flatpak app instance (killed by app-id via `flatpak kill`).
-#[derive(Clone)]
-enum KillTarget {
-    Process(String),
-    Flatpak(String),
-}
-
-// Cross-reference running processes and Flatpak instances against indexed
-// apps, returning (app display name, kill target) pairs for apps currently
-// running. Flatpak matches take priority since `flatpak kill` is more
-// reliable than `pkill` for sandboxed apps (whose host process name may not
-// match the app's display name).
-fn running_apps(
-    proc_names: &[String],
-    flatpak_ids: &[String],
-    apps: &[AppEntry],
-) -> Vec<(String, KillTarget)> {
-    let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for app in apps {
-        for id in flatpak_ids {
-            let il = id.to_lowercase();
-            if app.keywords.iter().any(|k| k.to_lowercase() == il) && seen.insert(app.name.clone())
-            {
-                out.push((app.name.clone(), KillTarget::Flatpak(id.clone())));
-                break;
-            }
-        }
-    }
-    for proc in proc_names {
-        let pl = proc.to_lowercase();
-        for app in apps {
-            let nl = app.name.to_lowercase();
-            let nl_compact = nl.replace(' ', "");
-            let matches =
-                nl == pl || nl_compact == pl || app.keywords.iter().any(|k| k.to_lowercase() == pl);
-            if matches && seen.insert(app.name.clone()) {
-                out.push((app.name.clone(), KillTarget::Process(proc.clone())));
-                break;
-            }
-        }
-    }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
-}
-
-fn kill_result(name: &str, target: &KillTarget) -> SearchResult {
-    let subtitle = match target {
-        KillTarget::Process(proc) => format!("pkill -i {}", proc),
-        KillTarget::Flatpak(id) => format!("flatpak kill {}", id),
-    };
-    SearchResult {
-        kind: ResultKind::System,
-        title: gettext("Kill: {name}").replace("{name}", &name.to_string()),
-        subtitle: Some(subtitle),
-        icon: Some("process-stop-symbolic".into()),
-        action: kill_action(target),
-        score: 1000,
-    }
-}
-
-fn kill_action(target: &KillTarget) -> Action {
-    let cmd = match target {
-        KillTarget::Process(proc) => {
-            let safe = shell_safe(proc);
-            if is_sandbox() {
-                format!("flatpak-spawn --host pkill -i {}", safe)
-            } else {
-                format!("pkill -i {}", safe)
-            }
-        }
-        KillTarget::Flatpak(id) => {
-            let safe = shell_safe(id);
-            if is_sandbox() {
-                format!("flatpak-spawn --host flatpak kill {}", safe)
-            } else {
-                format!("flatpak kill {}", safe)
-            }
-        }
-    };
-    Action::RunCommand(cmd)
-}
-
 fn install_result(app: &FlatpakApp) -> SearchResult {
     let sub = if app.description.is_empty() {
         gettext("via Flatpak ({app})").replace("{app}", &app.app_id)
@@ -2791,27 +2265,6 @@ fn install_result(app: &FlatpakApp) -> SearchResult {
         icon: Some(app.app_id.clone()),
         action: Action::StartOperation {
             title: gettext("Installing {name}").replace("{name}", &app.name),
-            source: "Flatpak".into(),
-            icon: app.app_id.clone(),
-            args,
-        },
-        score: 1000,
-    }
-}
-
-fn uninstall_result(app: &FlatpakApp) -> SearchResult {
-    let args = {
-        let mut a = flatpak_cmd_args(&["uninstall", "--assumeyes"]);
-        a.push(app.app_id.clone());
-        a
-    };
-    SearchResult {
-        kind: ResultKind::System,
-        title: gettext("Uninstall: {name}").replace("{name}", &app.name),
-        subtitle: Some(gettext("via Flatpak ({app})").replace("{app}", &app.app_id)),
-        icon: Some(app.app_id.clone()),
-        action: Action::StartOperation {
-            title: gettext("Uninstalling {name}").replace("{name}", &app.name),
             source: "Flatpak".into(),
             icon: app.app_id.clone(),
             args,
@@ -2880,71 +2333,6 @@ fn distro_install_result(pkg: &DistroPackage, pm: &str) -> SearchResult {
     }
 }
 
-fn distro_uninstall_result(pkg: &DistroPackage, pm: &str) -> SearchResult {
-    let (inner, label): (Vec<String>, &str) = match pm {
-        "apt" => (
-            vec![
-                "apt-get".into(),
-                "remove".into(),
-                "-y".into(),
-                pkg.name.clone(),
-            ],
-            "apt",
-        ),
-        "dnf" => (
-            vec!["dnf".into(), "remove".into(), "-y".into(), pkg.name.clone()],
-            "dnf",
-        ),
-        "pacman" => (
-            vec![
-                "pacman".into(),
-                "-R".into(),
-                "--noconfirm".into(),
-                pkg.name.clone(),
-            ],
-            "pacman",
-        ),
-        "zypper" => (
-            vec![
-                "zypper".into(),
-                "--non-interactive".into(),
-                "remove".into(),
-                pkg.name.clone(),
-            ],
-            "zypper",
-        ),
-        _ => {
-            return SearchResult {
-                kind: ResultKind::System,
-                title: format!("Uninstall: {}", pkg.name),
-                subtitle: None,
-                icon: Some("edit-delete-symbolic".into()),
-                action: Action::EnterMode("cmd".into()),
-                score: 900,
-            }
-        }
-    };
-    let sub = if pkg.description.is_empty() {
-        format!("via {}", label)
-    } else {
-        format!("{} — via {}", pkg.description, label)
-    };
-    let icon = format!("pkg:{}:edit-delete-symbolic", pkg.name);
-    SearchResult {
-        kind: ResultKind::System,
-        title: format!("Uninstall: {}", pkg.name),
-        subtitle: Some(sub),
-        icon: Some(icon.clone()),
-        action: Action::StartOperation {
-            title: format!("Uninstalling {}", pkg.name),
-            source: label.into(),
-            icon,
-            args: pkexec_cmd_args(inner),
-        },
-        score: 900,
-    }
-}
-
 fn snap_install_result(pkg: DistroPackage) -> SearchResult {
     let sub = if pkg.description.is_empty() {
         "via Snap".into()
@@ -2971,39 +2359,7 @@ fn snap_install_result(pkg: DistroPackage) -> SearchResult {
     }
 }
 
-fn snap_uninstall_result(pkg: &DistroPackage) -> SearchResult {
-    let icon = format!("pkg:{}:edit-delete-symbolic", pkg.name);
-    SearchResult {
-        kind: ResultKind::System,
-        title: format!("Uninstall: {}", pkg.name),
-        subtitle: Some(gettext("via snap").into()),
-        icon: Some(icon.clone()),
-        action: Action::StartOperation {
-            title: format!("Uninstalling {}", pkg.name),
-            source: "snap".into(),
-            icon,
-            args: pkexec_cmd_args(vec!["snap".into(), "remove".into(), pkg.name.clone()]),
-        },
-        score: 900,
-    }
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn matches_verb(verb: &str, candidates: &[&str]) -> bool {
-    candidates.iter().any(|c| {
-        *c == verb
-            || c.starts_with(verb)
-            || verb.starts_with(c)
-            || crate::search::fuzzy_match(verb, c)
-    })
-}
-
-fn shell_safe(s: &str) -> String {
-    s.chars()
-        .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
-        .collect()
-}
 
 #[cfg(test)]
 mod tests {
@@ -3503,10 +2859,6 @@ mod tests {
         assert!(!super::is_update_op(&["flatpak".into(), "install".into(), "org.x.Y".into()]));
     }
 
-    // "uninstall" sits at edit distance 2 from "install" — matches_verb()
-    // fuzzy-rates the pair as a match, so the install branch (checked first)
-    // used to steal the canonical uninstall query and offer to INSTALL the
-    // app you asked to remove.
     #[test]
     fn base_apps_are_filtered_from_the_install_catalog() {
         // Dependency bases have no icon anywhere — they must not surface
@@ -3515,27 +2867,6 @@ mod tests {
         assert!(!super::is_catalog_app("com.system76.Cosmic.BaseApp"));
         assert!(super::is_catalog_app("org.mozilla.firefox"));
         assert!(super::is_catalog_app("app.gummi.gummi"));
-    }
-
-    #[test]
-    fn uninstall_verb_wins_over_the_install_fuzzy_match() {
-        let cfg = crate::config::Config::default();
-        let rows = super::search("uninstall zzz_no_such_app_zzz", &cfg, &[]);
-        assert!(!rows.is_empty());
-        let title = &rows[0].title;
-        assert!(
-            title.contains("Scanning installed apps")
-                || title.contains("No installed app matching"),
-            "uninstall query left the uninstall branch: {title}"
-        );
-        // …and the install verb still routes to install.
-        let rows = super::search("install zzz_no_such_app_zzz", &cfg, &[]);
-        assert!(!rows.is_empty());
-        let title = &rows[0].title;
-        assert!(
-            title.starts_with("Searching for") || title.starts_with("No apps found"),
-            "install query left the install branch: {title}"
-        );
     }
 
     #[test]
