@@ -117,6 +117,11 @@ fn cache_insert(path: std::path::PathBuf, payload: PreviewPayload) {
 #[derive(Clone)]
 pub struct PreviewPane {
     container: gtk::Box,
+    /// Height the pane must fit in (the result list's height); 0 = free.
+    fit_height: std::rc::Rc<std::cell::Cell<i32>>,
+    /// Picture/video frames with the minimum height they use when there is
+    /// room; shrunk by [`PreviewPane::apply_fit`] when there is not.
+    frames: std::rc::Rc<Vec<(gtk::ScrolledWindow, i32)>>,
     stack: gtk::Stack,
     image: gtk::Picture,
     image_caption: gtk::Label,
@@ -523,8 +528,16 @@ impl PreviewPane {
         nav_box.append(&nav_next);
         container.append(&nav_box);
 
+        let frames = std::rc::Rc::new(vec![
+            (image_clip.clone(), 130),
+            (video_clip.clone(), 240),
+            (mcover_clip.clone(), 240),
+            (hpic_clip.clone(), 240),
+        ]);
         let pane = Self {
             container,
+            fit_height: std::rc::Rc::new(std::cell::Cell::new(0)),
+            frames,
             stack,
             image,
             image_caption,
@@ -595,6 +608,42 @@ impl PreviewPane {
         pane.container.add_controller(wheel);
 
         pane
+    }
+
+    /// Fit the pane into `height` px (the result list's height): the file
+    /// icon and picture frames shrink, the key hint goes when space is short,
+    /// and the metadata stays readable.
+    pub fn fit_to(&self, height: i32) {
+        self.fit_height.set(height);
+        self.apply_fit();
+    }
+
+    fn apply_fit(&self) {
+        let h = self.fit_height.get();
+        if h <= 0 {
+            return;
+        }
+        let width = self.container.width_request().max(1) - 24;
+        let natural = |w: &gtk::Widget| {
+            if w.is_visible() { w.measure(gtk::Orientation::Vertical, width).1 } else { 0 }
+        };
+        let meta = natural(self.metadata_box.upcast_ref());
+        let nav = natural(self.nav_box.upcast_ref());
+        let caption = natural(self.clip_caption.upcast_ref());
+        let room = h - meta - nav - caption;
+        // Picture/video frames: their usual minimum, or what is left.
+        for (frame, usual) in self.frames.iter() {
+            frame.set_min_content_height(room.clamp(48, *usual));
+        }
+        // File/folder card: icon (16 top margin, 12 spacing) and the hint.
+        self.ihint.set_visible(true);
+        let hint = natural(self.ihint.upcast_ref());
+        let mut icon = room - hint - 16 - 12 - 8;
+        if icon < 64 {
+            self.ihint.set_visible(false);
+            icon = room - 16 - 8;
+        }
+        self.iicon.set_pixel_size(icon.clamp(32, 144));
     }
 
     pub fn widget(&self) -> &gtk::Box {
@@ -1010,6 +1059,7 @@ impl PreviewPane {
                 } else {
                     self.nav_box.set_visible(false);
                 }
+                self.apply_fit();
             }
             PreviewPayload::Text { content } => {
                 self.text.buffer().set_text(content);
@@ -1200,6 +1250,7 @@ impl PreviewPane {
             "Enter — open with default app · Ctrl+Enter — open containing folder in terminal"
         });
         self.stack.set_visible_child_name("info");
+        self.apply_fit();
     }
 
     fn populate_metadata(&self, p: &Path) {
@@ -1263,6 +1314,7 @@ impl PreviewPane {
             self.imetadata.attach(&key, 0, row as i32, 1, 1);
             self.imetadata.attach(&value, 1, row as i32, 1, 1);
         }
+        self.apply_fit();
     }
 }
 
