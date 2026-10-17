@@ -14,8 +14,8 @@ available at `../PRIVACY_AND_SECURITY.md`.
   word; Spotty supplies quoting. Do not re-interpret query data through `eval`
   or another interpreter. Quoting cannot secure an untrusted template.
 - Web manifests support HTTP(S) links. Activating one sends the query to its
-  website. Translation uses the configured LibreTranslate endpoint, which is
-  local by default but can be remote. Dictionary/currency backends can also
+  website. Translation sends typed text to Google Translate's free
+  endpoint by default, or to the service picked in Settings (MyMemory, LibreTranslate, DeepL, Google Cloud, Azure, Yandex, Kagi); in the main search only "<text> in <language>" queries are sent. Translation API keys are stored in the desktop keyring (Secret Service), not in config.json, and reach curl over stdin, never argv. Dictionary/currency backends can also
   make network requests; local processing is not a universal privacy promise.
 - The mutable repository/catalog is trusted and is not independently signed.
   Maintainer account compromise can affect users installing manifests. Protect

@@ -43,7 +43,7 @@ a vulnerability.
 | [`triggers/convert.json`](triggers/convert.json) | Install from Store | Convert units, currency and number bases |
 | [`triggers/updates.json`](triggers/updates.json) | Install from Store | Check and install updates |
 | [`triggers/dictionary.json`](triggers/dictionary.json) | `dict` | Look up a word definition |
-| [`triggers/translate.json`](triggers/translate.json) | `translate` | Translate text locally — detects the language, targets your system language |
+| [`triggers/translate.json`](triggers/translate.json) | `translate` | Translate text as you type — detects the language, free, no account needed |
 
 The six native result providers start uninstalled. Install one from the Store
 to add it to regular search. Then set an optional word or shortcut in Spotty

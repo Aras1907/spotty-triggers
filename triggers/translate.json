@@ -2,14 +2,14 @@
   "id": "translate",
   "name": "Translate",
   "word": "translate",
-  "description": "Translate text locally — detects the language, targets your system language",
+  "description": "Translate text as you type — detects the language, free, no account needed",
   "icon": "tools-check-spelling-symbolic",
   "shortcut": "",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "spotty",
-  "help": "Trigger: translate\n\nType \"translate <text>\" to translate it: the source language is detected and the text is translated into your system language. Stop typing for 3 seconds (or press Enter on the \"Translating…\" row) and the result appears right here — press Enter on the translation to copy it.\n\nPick another target from the expanded list, or type a language after your text (\"hello po\" → Portuguese). \"Back to Auto\" returns to the system language.\n\nUses your configured LibreTranslate endpoint (default http://localhost:5000). Text stays local with the default endpoint; a remote endpoint receives your text and any API key over HTTPS. There is no automatic cloud fallback. Start it once with: pip install libretranslate && libretranslate",
+  "help": "Trigger: translate\n\nType \"translate <text>\" and the translation appears as you type: the source language is detected and the text is translated into your system language. Text that already is in your system language is translated into English instead (or into your system language when you picked another target). Single words also list alternative translations. Press Enter on a translation to copy it.\n\nPick another target from the list, or name it in the query: \"translate 'bonjour' in english\" or \"translate good morning to japanese\" translates straight into that language. This also works in the main search without the trigger word, but only for \"<text> in <language>\" (\"bonjour in english\"): other main-search text is never sent for translation. You can also type a language after your text (\"hello po\") and press Enter on the suggestion. \"Source: Auto\" lets you set the source language when detection guesses wrong. \"Back to Auto\" returns to the system language.\n\nPick the translation service in Settings → Triggers → Translate. Google Translate (free) and MyMemory need no API key; LibreTranslate needs one only on hosted servers; DeepL, Google Cloud Translation, Microsoft Translator (Azure), Yandex Translate and Kagi Translate need an API key (Kagi: your session token). Keys are kept in your desktop keyring, never in Spotty's config file. Your text is sent to the picked service over HTTPS while you type; pick LibreTranslate with your own server (for example http://127.0.0.1:5000) to keep it on your computer.",
   "action": {
     "type": "web",
-    "url": "http://localhost:5000/"
+    "url": "https://translate.google.com/"
   }
 }

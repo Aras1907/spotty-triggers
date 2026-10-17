@@ -72,7 +72,7 @@
     "preinstalled": true,
     "long_description": "Finds emoji by name or keyword in a list built into Spotty, so it works offline. Enter copies the emoji you pick to the clipboard.",
     "examples": [
-      "emoji heart",
+      "emoji red heart",
       "emoji rocket",
       "emoji smile"
     ],
@@ -93,7 +93,7 @@
     "long_description": "Lists your Bluetooth devices through BlueZ (bluetoothctl) and connects, disconnects or pairs them. It can also scan for new devices and switch the adapter on or off. Nothing leaves this computer.",
     "examples": [
       "bt",
-      "bt headphones",
+      "bt off",
       "bt scan"
     ],
     "network": "",
@@ -240,17 +240,18 @@
     "id": "translate",
     "name": "Translate",
     "word": "translate",
-    "description": "Translate text locally — detects the language, targets your system language",
+    "description": "Translate text as you type — detects the language, free, no account needed",
     "icon": "tools-check-spelling-symbolic",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "author": "spotty",
     "shortcut": "",
-    "long_description": "Translates text as you type. The language is detected automatically and the result is shown in your system language. The text goes only to the LibreTranslate server in your settings, which runs on this computer by default. Enter copies the translation.",
+    "long_description": "Translates text as you type. The language is detected automatically and the result is shown in your system language; text already in your system language goes to English. Single words also show alternative translations. Uses Google Translate's free service by default, with no account or key. In Settings you can switch to MyMemory, LibreTranslate, DeepL, Google Cloud, Microsoft Translator, Yandex or Kagi; services that need an API key say so, and keys stay in your keyring. Enter copies the translation.",
     "examples": [
       "translate hello",
-      "translate hello po"
+      "translate \"bonjour\" in english",
+      "translate good morning to japanese"
     ],
-    "network": "your LibreTranslate server (this computer by default)",
+    "network": "translate.googleapis.com, or the translation service you pick in Settings",
     "homepage": "https://github.com/Aras1907/spotty-triggers"
   }
 ]

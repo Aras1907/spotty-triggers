@@ -27,6 +27,7 @@ pub mod run;
 pub mod settings_panels;
 pub mod system;
 pub mod translate;
+pub mod translate_api;
 pub mod typo;
 pub mod uninstall;
 pub mod web;
@@ -134,7 +135,7 @@ pub enum Action {
     SetTranslateSource {
         code: String,
     },
-    /// Translate right now, skipping the 3 s auto-translate delay (also the
+    /// Translate right now, skipping the live-translation delay (also the
     /// retry for a failed attempt).
     TranslateNow {
         text: String,
@@ -464,8 +465,10 @@ fn regular_trigger_sources(
     let owned = crate::triggers::keywords();
     let mut out = Vec::new();
     for kw in config.command_keywords.iter().chain(owned.iter()) {
+        // Translate joins the regular search only through
+        // `translate::regular_results` ("<text> in <language>").
         if kw.is_result()
-            || matches!(kw.id.as_str(), "clipboard" | "dictionary")
+            || matches!(kw.id.as_str(), "clipboard" | "dictionary" | "translate")
             || !config.keyword_usable(kw)
             || !config.in_regular_search(&kw.id)
         {
@@ -667,6 +670,15 @@ pub fn universal_results(
         }
     }
 
+    // "<text> in <language>": the translation card leads, under an exact
+    // title match. Any other query is never sent to the translation service.
+    if config.keyword_for_id("translate").is_some() {
+        for mut row in translate::regular_results(query, config) {
+            row.score = 975_000;
+            ranked.push(row);
+        }
+    }
+
     let mut r = merge_pinned(ranked, &ql, &config.pinned_results);
     let ops: Vec<SearchResult> = crate::operations::running_result_rows()
         .into_iter()
@@ -776,7 +788,7 @@ fn search_keyword(
         return run::search(rest);
     }
     if kw.id == "translate" {
-        // The translate trigger: live, local translation — target follows
+        // The translate trigger: live translation — target follows
         // the system language unless a language was picked.
         return translate::results(rest, config);
     }

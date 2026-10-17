@@ -929,3 +929,225 @@ fn open_updates_dialog(parent: &adw::PreferencesWindow, config: &Rc<RefCell<Conf
     dlg.present(Some(parent));
 }
 
+
+/// The translate trigger's service choice: every supported service, whether
+/// it needs an API key, the key itself (stored in the keyring, never in
+/// config.json) and the server/region fields the service needs.
+pub(super) fn translate_group(
+    config: &Rc<RefCell<Config>>,
+    toast: Rc<dyn Fn(&str)>,
+) -> adw::PreferencesGroup {
+    use crate::search::translate_api::{self, KeyNeed, PROVIDERS};
+
+    let group = adw::PreferencesGroup::builder()
+        .title(gettext("Translation service"))
+        .description(gettext("Where the text you type is sent to be translated."))
+        .build();
+
+    let labels: Vec<String> = PROVIDERS
+        .iter()
+        .map(|p| format!("{} — {}", p.name, translate_api::key_need_label(p.key)))
+        .collect();
+    let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let combo = adw::ComboRow::builder()
+        .title(gettext("Service"))
+        .use_markup(false)
+        .build();
+    combo.set_model(Some(&gtk::StringList::new(&label_refs)));
+    let current = {
+        let c = config.borrow();
+        let picked = c.translate_provider.trim().to_string();
+        if !picked.is_empty() {
+            picked
+        } else if c.translate_endpoint.trim().trim_end_matches('/')
+            != Config::default().translate_endpoint
+        {
+            translate_api::LIBRE.to_string()
+        } else {
+            translate_api::GOOGLE.to_string()
+        }
+    };
+    combo.set_selected(PROVIDERS.iter().position(|p| p.id == current).unwrap_or(0) as u32);
+    group.add(&combo);
+
+    // What the picked service needs, and whether its key is stored.
+    let status = adw::ActionRow::builder().use_markup(false).build();
+    status.set_subtitle_lines(4);
+    let status_icon = gtk::Image::builder().valign(gtk::Align::Center).build();
+    status.add_prefix(&status_icon);
+    let remove = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .css_classes(["flat", "circular"])
+        .valign(gtk::Align::Center)
+        .tooltip_text(gettext("Remove the stored key"))
+        .visible(false)
+        .build();
+    status.add_suffix(&remove);
+    group.add(&status);
+
+    let key_row = adw::PasswordEntryRow::builder().show_apply_button(true).build();
+    group.add(&key_row);
+    let server_row = adw::EntryRow::builder()
+        .title(gettext("Server"))
+        .text(&config.borrow().translate_endpoint)
+        .show_apply_button(true)
+        .use_markup(false)
+        .build();
+    group.add(&server_row);
+    let region_row = adw::EntryRow::builder()
+        .title(gettext("Region (empty = global)"))
+        .text(&config.borrow().translate_region)
+        .show_apply_button(true)
+        .use_markup(false)
+        .build();
+    group.add(&region_row);
+
+    let selected = {
+        let combo = combo.clone();
+        move || PROVIDERS.get(combo.selected() as usize).copied().unwrap_or(PROVIDERS[0])
+    };
+    // Newer refreshes win over a keyring lookup still in flight.
+    let generation = Rc::new(std::cell::Cell::new(0u64));
+    let refresh: Rc<dyn Fn()> = {
+        let (status, status_icon, remove) = (status.clone(), status_icon.clone(), remove.clone());
+        let (key_row, server_row, region_row) =
+            (key_row.clone(), server_row.clone(), region_row.clone());
+        let selected = selected.clone();
+        let generation = generation.clone();
+        Rc::new(move || {
+            let p = selected();
+            let need = translate_api::key_need_label(p.key);
+            let sends = if p.id == translate_api::LIBRE {
+                gettext("Sends your text to the server below.")
+            } else {
+                gettext("Sends your text to {host}.").replace("{host}", p.host)
+            };
+            status.set_title(&need);
+            status.set_subtitle(&format!("{} {sends}", gettext(p.hint)));
+            status_icon.set_icon_name(Some(if p.key == KeyNeed::Required {
+                "dialog-warning-symbolic"
+            } else {
+                "dialog-information-symbolic"
+            }));
+            remove.set_visible(false);
+            key_row.set_visible(p.key != KeyNeed::None);
+            key_row.set_title(&gettext(p.key_label));
+            server_row.set_visible(p.id == translate_api::LIBRE);
+            region_row.set_visible(p.id == "azure");
+            if p.key == KeyNeed::None {
+                return;
+            }
+            let gen = generation.get() + 1;
+            generation.set(gen);
+            let (status, status_icon, remove) =
+                (status.clone(), status_icon.clone(), remove.clone());
+            let generation = generation.clone();
+            let account = translate_api::key_account(p.id);
+            glib::spawn_future_local(async move {
+                let found = gtk::gio::spawn_blocking(move || crate::keyring::has(&account))
+                    .await
+                    .unwrap_or_else(|_| Err("keyring lookup failed".into()));
+                if generation.get() != gen {
+                    return;
+                }
+                match found {
+                    Ok(true) => {
+                        status.set_title(&gettext("API key saved in your keyring"));
+                        status_icon.set_icon_name(Some("emblem-ok-symbolic"));
+                        remove.set_visible(true);
+                    }
+                    Ok(false) if p.key == KeyNeed::Required => {
+                        status.set_title(&gettext(
+                            "API key required — this service does not work without one",
+                        ));
+                    }
+                    Ok(false) => {}
+                    Err(e) => status.set_title(&gettext("Keyring unavailable: {error}").replace("{error}", &e)),
+                }
+            });
+        })
+    };
+    refresh();
+
+    {
+        let cfg = config.clone();
+        let refresh = refresh.clone();
+        let selected = selected.clone();
+        combo.connect_selected_notify(move |_| {
+            {
+                let mut c = cfg.borrow_mut();
+                c.translate_provider = selected().id.to_string();
+                c.save();
+            }
+            refresh();
+            crate::app::refresh_search_window();
+        });
+    }
+    {
+        let refresh = refresh.clone();
+        let selected = selected.clone();
+        let toast = toast.clone();
+        key_row.connect_apply(move |row| {
+            let key = row.text().trim().to_string();
+            row.set_text("");
+            if key.is_empty() {
+                return;
+            }
+            let p = selected();
+            let account = translate_api::key_account(p.id);
+            let label = format!("Spotty: {} {}", p.name, p.key_label);
+            let (refresh, toast) = (refresh.clone(), toast.clone());
+            glib::spawn_future_local(async move {
+                let saved =
+                    gtk::gio::spawn_blocking(move || crate::keyring::set(&account, &label, &key))
+                        .await
+                        .unwrap_or_else(|_| Err("keyring call failed".into()));
+                match saved {
+                    Ok(()) => toast(&gettext("Key saved in your keyring")),
+                    Err(e) => toast(&gettext("Couldn't save the key: {error}").replace("{error}", &e)),
+                }
+                refresh();
+                crate::app::refresh_search_window();
+            });
+        });
+    }
+    {
+        let refresh = refresh.clone();
+        let selected = selected.clone();
+        remove.connect_clicked(move |_| {
+            let account = translate_api::key_account(selected().id);
+            let (refresh, toast) = (refresh.clone(), toast.clone());
+            glib::spawn_future_local(async move {
+                let cleared = gtk::gio::spawn_blocking(move || crate::keyring::clear(&account))
+                    .await
+                    .unwrap_or_else(|_| Err("keyring call failed".into()));
+                if let Err(e) = cleared {
+                    toast(&gettext("Couldn't remove the key: {error}").replace("{error}", &e));
+                }
+                refresh();
+                crate::app::refresh_search_window();
+            });
+        });
+    }
+    {
+        let cfg = config.clone();
+        server_row.connect_apply(move |row| {
+            let mut c = cfg.borrow_mut();
+            c.translate_endpoint = row.text().trim().to_string();
+            c.save();
+            drop(c);
+            crate::app::refresh_search_window();
+        });
+    }
+    {
+        let cfg = config.clone();
+        region_row.connect_apply(move |row| {
+            let mut c = cfg.borrow_mut();
+            c.translate_region = row.text().trim().to_string();
+            c.save();
+            drop(c);
+            crate::app::refresh_search_window();
+        });
+    }
+    group
+}

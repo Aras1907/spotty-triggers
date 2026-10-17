@@ -886,11 +886,11 @@ pub fn search(query: &str) -> Vec<SearchResult> {
             "scan",
             "scan for devices",
             "discover",
-            "search",
             "find devices",
+            "new devices",
             "pair new",
         ];
-        if let Some(score) = match_score(&ql, &scan_keywords) {
+        if let Some(score) = scan_score(&ql, &scan_keywords) {
             results.push(SearchResult {
                 kind: ResultKind::System,
                 title: "Scan for devices".into(),
@@ -960,26 +960,30 @@ pub fn search(query: &str) -> Vec<SearchResult> {
         }
     }
 
-    // Fallback: nothing matched → offer scan.
-    if !ql.is_empty() && results.is_empty() {
-        results.push(SearchResult {
-            kind: ResultKind::System,
-            title: "Scan for devices".into(),
-            subtitle: Some("No matching device — scan for new devices".into()),
-            icon: Some("system-search-symbolic".into()),
-            action: Action::Bluetooth {
-                op: "scan".into(),
-                mac: String::new(),
-            },
-            score: 60_000,
-        });
-    }
-
     results.sort_by(|a, b| b.score.cmp(&a.score));
     results
 }
 
 // ── Scoring helpers ───────────────────────────────────────────────────────
+
+/// Whether a typed query asks for the scan row: the whole query is a keyword,
+/// or the start of a keyword or of one of its words. Never fuzzy, so an
+/// unrelated query ("airpods", "x") doesn't surface "Scan for devices".
+fn scan_score(ql: &str, keywords: &[&str]) -> Option<i32> {
+    if ql.is_empty() {
+        return None;
+    }
+    if keywords.iter().any(|k| *k == ql) {
+        return Some(100_000);
+    }
+    if keywords.iter().any(|k| k.starts_with(ql)) {
+        return Some(90_000);
+    }
+    if ql.len() >= 3 && keywords.iter().any(|k| k.split_whitespace().any(|w| w.starts_with(ql))) {
+        return Some(80_000);
+    }
+    None
+}
 
 /// Deterministic exact/prefix/contains match — no fuzzy/typo tiers.
 /// Used for the power row so the non-usable option can never be surfaced
@@ -1126,6 +1130,14 @@ mod tests {
             match_score("devices", &["scan for devices"]),
             Some(80_000)
         );
+    }
+
+    #[test]
+    fn scan_row_only_for_scan_queries() {
+        assert!(scan_score("sc", &["scan", "scan for devices"]).is_some());
+        assert!(scan_score("dev", &["scan for devices"]).is_some());
+        assert!(scan_score("airpods", &["scan", "scan for devices", "discover"]).is_none());
+        assert!(scan_score("e", &["scan for devices"]).is_none());
     }
 
     #[test]
