@@ -13,7 +13,13 @@ const QUERY_RESULT_LIMIT: usize = 40;
 const QUERY_REFRESH_EVERY_HITS: usize = 4;
 const MAX_DIRECT_SCAN_DOCS: usize = 12_000;
 const MAX_PRIORITY_SCAN_DOCS: usize = 800;
-const CONTENT_CANDIDATE_CACHE_SECS: u64 = 5;
+/// The disk walk for content candidates (~90 ms) is reused this long; a
+/// re-index clears it sooner (see `clear_content_caches`).
+const CONTENT_CANDIDATE_CACHE_SECS: u64 = 120;
+/// Content search starts only once typing pauses this long: every keystroke
+/// used to start a full scan (~140 ms of setup, then text extraction) that
+/// the next keystroke threw away, competing with the name results.
+const CONTENT_SCAN_DELAY: Duration = Duration::from_millis(300);
 const QUERY_MISS_CACHE_SECS: u64 = 10;
 const MAX_CACHED_TEXT_CHARS: usize = 200_000;
 const MAX_COMPACT_SNIPPET_CHARS: usize = MAX_CACHED_TEXT_CHARS;
@@ -242,6 +248,12 @@ fn start_content_query_search(query: String, snapshot: Arc<RwLock<crate::index::
             }
         }
         let _guard = InflightGuard(query.clone());
+
+        // Wait for typing to pause; a newer query makes this one moot.
+        std::thread::sleep(CONTENT_SCAN_DELAY);
+        if !is_active_content_query(&query) {
+            return;
+        }
 
         let mut hits = 0usize;
         let mut since_refresh = 0usize;
@@ -2198,7 +2210,8 @@ pub(super) fn type_filtered(files: &[FileEntry], exts: &[String], name_filter: &
 
 /// Standard fuzzy/substring name search across all indexed files.
 pub fn search_names(query: &str, files: &[FileEntry]) -> Vec<SearchResult> {
-    let ql = query.to_ascii_lowercase();
+    let ql = query.trim().to_ascii_lowercase();
+    let words: Vec<&str> = ql.split_whitespace().collect();
     let mut hits: Vec<(i32, usize)> = Vec::new();
 
     for (i, f) in files.iter().enumerate() {
@@ -2209,6 +2222,9 @@ pub fn search_names(query: &str, files: &[FileEntry]) -> Vec<SearchResult> {
             5000
         } else if nl.contains(&ql) {
             2000 - (f.name.len() as i32).min(500)
+        } else if words.len() > 1 && words.iter().all(|w| nl.contains(w)) {
+            // "budget 2026" finds "2026-Budget-final.xlsx": every word, any order.
+            1500 - (f.name.len() as i32).min(500)
         } else {
             0
         };
@@ -2507,5 +2523,30 @@ mod tests {
         let result = super::fuzzy_content_snippet(text, "hello");
         // Should not panic; may return None if NUL confuses matching, but no crash.
         let _ = result;
+    }
+}
+
+#[cfg(test)]
+mod name_search_tests {
+    use super::*;
+
+    fn entry(name: &str) -> FileEntry {
+        FileEntry {
+            path: PathBuf::from(format!("/home/u/{name}")),
+            name: name.into(),
+            name_lower: name.to_ascii_lowercase(),
+            is_dir: false,
+        }
+    }
+
+    #[test]
+    fn every_word_in_any_order_matches() {
+        let files = vec![entry("2026-Budget-final.xlsx"), entry("budget.txt"), entry("notes 2026.md")];
+        let hits = search_names("budget 2026", &files);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "2026-Budget-final.xlsx");
+        // A whole-phrase match still ranks above a words-only one.
+        let files = vec![entry("2026 budget plan.ods"), entry("budget-2026 old.ods"), entry("x budget 2026.ods")];
+        assert_eq!(search_names("budget 2026", &files)[0].title, "x budget 2026.ods");
     }
 }
