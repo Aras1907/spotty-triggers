@@ -23,7 +23,6 @@ pub mod dictionary;
 pub mod emoji;
 pub mod files;
 pub mod jobs;
-pub mod run;
 pub mod settings_panels;
 pub mod system;
 pub mod translate;
@@ -474,8 +473,7 @@ fn regular_trigger_sources(
         {
             continue;
         }
-        let runs_commands = kw.id == "run"
-            || matches!(
+        let runs_commands = matches!(
                 crate::triggers::by_id(&kw.id).map(|m| m.action),
                 Some(crate::triggers::TriggerAction::Shell { .. })
             );
@@ -756,6 +754,17 @@ pub fn search_mode_for_id(
 }
 
 /// Dispatch using the stable keyword identity, including wordless triggers.
+/// The argv that runs a shell manifest's command through a login shell, on
+/// the host when sandboxed (so it sees the real system, not the runtime).
+fn command_argv(cmd: &str) -> Vec<String> {
+    let shell = ["sh".to_string(), "-lc".to_string(), cmd.to_string()];
+    if std::env::var("FLATPAK_ID").is_ok() {
+        ["flatpak-spawn".to_string(), "--host".to_string()].into_iter().chain(shell).collect()
+    } else {
+        shell.to_vec()
+    }
+}
+
 fn search_keyword(
     kw: crate::config::CommandKeyword,
     query: &str,
@@ -783,9 +792,6 @@ fn search_keyword(
     }
     if kw.is_result() {
         return result_mode(&kw.id, rest, config, snap_lock);
-    }
-    if kw.id == "run" {
-        return run::search(rest);
     }
     if kw.id == "translate" {
         // The translate trigger: live translation — target follows
@@ -883,7 +889,7 @@ fn search_keyword(
                     icon,
                     action: Action::RunWithProgress {
                         title: gettext("{name}: {query}").replace("{name}", &trigger.name).replace("{query}", rest),
-                        args: run::command_argv(&rendered),
+                        args: command_argv(&rendered),
                     },
                     score: 100_000,
                 }]

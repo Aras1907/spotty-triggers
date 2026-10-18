@@ -33,7 +33,6 @@ a vulnerability.
 |---|---|---|
 | [`triggers/files.json`](triggers/files.json) | `find` | Search all files and folders |
 | [`triggers/clipboard.json`](triggers/clipboard.json) | `clip` | Search clipboard history |
-| [`triggers/run.json`](triggers/run.json) | `cmd` | Run a command |
 | [`triggers/emoji.json`](triggers/emoji.json) | `emoji` | Search emoji |
 | [`triggers/bluetooth.json`](triggers/bluetooth.json) | `bt` | Bluetooth devices |
 | [`triggers/apps.json`](triggers/apps.json) | Install from Store | Search installed applications |
@@ -224,7 +223,7 @@ uninstall.
 
 - `id` must be unique, lowercase, and use only letters, digits, `_`, `-`, `.`
 - `word` is the trigger text — it must not collide with a built-in trigger
-  (`find`, `clip`, `cmd`, `emoji`, `bt`) or another trigger
+  (`find`, `clip`, `emoji`, `bt`) or another trigger
 - keep `name` short — it's what shows on the trigger row
 
 ## Submitting a trigger

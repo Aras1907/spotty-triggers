@@ -40,26 +40,6 @@
     "homepage": "https://github.com/Aras1907/spotty-triggers"
   },
   {
-    "id": "run",
-    "name": "Command",
-    "word": "cmd",
-    "description": "Run a command",
-    "icon": "utilities-terminal-symbolic",
-    "version": "1.0.0",
-    "author": "spotty",
-    "shortcut": "Super+Ctrl+T",
-    "native": true,
-    "preinstalled": true,
-    "long_description": "Runs a shell command you type after the trigger word, through your login shell, and streams its output into the search window. Commands you ran recently come back as suggestions. Commands run with your own permissions, so type only what you would type in a terminal.",
-    "examples": [
-      "cmd uptime",
-      "cmd df -h",
-      "cmd ip addr"
-    ],
-    "network": "",
-    "homepage": "https://github.com/Aras1907/spotty-triggers"
-  },
-  {
     "id": "emoji",
     "name": "Emoji",
     "word": "emoji",

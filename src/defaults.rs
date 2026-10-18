@@ -48,8 +48,8 @@ pub const RESULT_IDS: [&str; 6] = ["apps", "newapps", "web", "calc", "convert", 
 /// ranks first in the regular search. Answers that only appear for their own
 /// kind of query (a sum, a conversion) lead; the web search, the fallback for
 /// everything, comes last. Installed triggers follow after it.
-pub const DEFAULT_ORDER: [&str; 11] = [
-    "calc", "convert", "apps", "updates", "files", "clipboard", "run", "emoji", "bluetooth",
+pub const DEFAULT_ORDER: [&str; 10] = [
+    "calc", "convert", "apps", "updates", "files", "clipboard", "emoji", "bluetooth",
     "newapps", "web",
 ];
 
@@ -58,7 +58,6 @@ pub fn display_name(id: &str) -> &'static str {
         match id {
             "files" => "Find",
             "clipboard" => "Clip",
-            "run" => "Cmd",
             "emoji" => "Emoji",
             "music" => "Music",
             "translate" => "Translate",
@@ -105,7 +104,7 @@ mod service_tests {
 
     #[test]
     fn every_store_entry_carries_its_store_details() {
-        assert_eq!(CATALOG.len(), 13);
+        assert_eq!(CATALOG.len(), 12);
         for entry in CATALOG.iter() {
             assert!(!entry.long_description.trim().is_empty(), "{} needs long_description", entry.id);
             assert!(!entry.examples.is_empty(), "{} needs examples", entry.id);

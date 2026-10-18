@@ -265,21 +265,6 @@ mod tests {
     }
 
     #[test]
-    fn a_command_runner_in_the_regular_search_never_becomes_the_top_row() {
-        let snap = snap_with(vec![]);
-        let mut cfg = Config::default();
-        cfg.set_in_regular_search("run", true);
-        let rows = compute("zzqqxx", None, &cfg, &snap);
-        let run = rows.iter().find(|r| matches!(r.action, crate::search::Action::RunWithProgress { .. }));
-        let run = run.expect("the Run trigger added its row");
-        let web_title = crate::search::web::result("zzqqxx", &cfg).title;
-        let web = rows.iter().find(|r| r.title == web_title).expect("web fallback");
-        assert!(run.score < web.score, "run {} must sit below the web fallback {}", run.score, web.score);
-        let top = rows.iter().find(|r| r.icon.as_deref() != Some("op-progress")).unwrap();
-        assert_ne!(top.title, run.title, "Enter must not run a command by accident");
-    }
-
-    #[test]
     fn typoed_trigger_word_reaches_the_live_search() {
         let snap = snap_with(vec![]);
         let cfg = Config::default();
