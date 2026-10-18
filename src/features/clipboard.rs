@@ -362,48 +362,102 @@ impl ClipboardHistory {
         let last_file_hash: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
 
         log::info!("clipboard: starting to watch for changes");
-        read_current_clipboard(&cb, &last_text, &last_img_hash, &last_file_hash);
+        read_current_clipboard(&watch_clipboard(), &last_text, &last_img_hash, &last_file_hash);
 
-        // Connect to the changed signal for real-time updates when window is active
-        let cb_signal = cb.clone();
-        let last_text_signal = last_text.clone();
-        let last_img_signal = last_img_hash.clone();
-        let last_file_signal = last_file_hash.clone();
-        cb.connect_changed(move |_| {
-            CLIPBOARD_REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
-            log::debug!("clipboard: change signal fired");
-            read_current_clipboard(
-                &cb_signal,
-                &last_text_signal,
-                &last_img_signal,
-                &last_file_signal,
-            );
-        });
+        // Connect to the changed signal for real-time updates. On Wayland the
+        // native clipboard only fires while a Spotty window has focus, so the
+        // XWayland mirror (when there is one) is what catches copies made
+        // while Spotty is hidden.
+        let mut sources = vec![cb.clone()];
+        if let Some(x) = xwayland_clipboard() {
+            sources.push(x);
+        }
+        for source in sources {
+            let last_text_signal = last_text.clone();
+            let last_img_signal = last_img_hash.clone();
+            let last_file_signal = last_file_hash.clone();
+            source.connect_changed(move |_| {
+                CLIPBOARD_REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
+                log::debug!("clipboard: change signal fired");
+                read_current_clipboard(
+                    &watch_clipboard(),
+                    &last_text_signal,
+                    &last_img_signal,
+                    &last_file_signal,
+                );
+            });
+        }
 
-        // ALSO: poll the clipboard periodically (every 250ms) to catch changes even
-        // when the window is hidden and the changed signal doesn't fire reliably.
-        // This ensures we never miss a copy, even after long idle periods.
-        let cb_poll = cb.clone();
+        // ALSO: poll the clipboard periodically (every 250ms) as a fallback in
+        // case a changed signal is missed.
         let last_text_poll = last_text.clone();
         let last_img_poll = last_img_hash.clone();
         let last_file_poll = last_file_hash.clone();
         glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
             log::debug!("clipboard: polling timer tick");
-            read_current_clipboard(&cb_poll, &last_text_poll, &last_img_poll, &last_file_poll);
+            read_current_clipboard(&watch_clipboard(), &last_text_poll, &last_img_poll, &last_file_poll);
             glib::ControlFlow::Continue
         });
     }
 
     pub fn refresh_now(&mut self) {
-        let Some(d) = gdk::Display::default() else {
+        if gdk::Display::default().is_none() {
             return;
-        };
-        let cb = d.clipboard();
+        }
         let last_text: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         let last_img_hash: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
         let last_file_hash: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
-        read_current_clipboard(&cb, &last_text, &last_img_hash, &last_file_hash);
+        read_current_clipboard(&watch_clipboard(), &last_text, &last_img_hash, &last_file_hash);
     }
+}
+
+thread_local! {
+    /// XWayland display opened next to the native Wayland one, kept for the
+    /// life of the daemon. `None` inside means it was tried and is unavailable.
+    static XWAYLAND_DISPLAY: RefCell<Option<Option<gdk::Display>>> = const { RefCell::new(None) };
+}
+
+/// The clipboard of the XWayland display, when Spotty runs on Wayland.
+///
+/// GNOME (Mutter) has no data-control protocol, and it only sends Wayland
+/// clipboard updates to the focused client: while Spotty is hidden its native
+/// clipboard goes stale and copies are missed. Mutter mirrors the clipboard to
+/// XWayland, where any client can watch and read it without focus.
+fn xwayland_clipboard() -> Option<gdk::Clipboard> {
+    XWAYLAND_DISPLAY.with(|slot| {
+        slot.borrow_mut()
+            .get_or_insert_with(|| {
+                let native = gdk::Display::default()?;
+                if native.type_().name() != "GdkWaylandDisplay" {
+                    return None;
+                }
+                let name = std::env::var("DISPLAY").ok().filter(|n| !n.is_empty())?;
+                let x = gdk::Display::open(Some(&name));
+                match &x {
+                    Some(_) => log::info!("clipboard: watching the XWayland clipboard mirror"),
+                    None => log::info!("clipboard: no XWayland display, using the native clipboard only"),
+                }
+                x
+            })
+            .as_ref()
+            .map(|d| d.clipboard())
+    })
+}
+
+/// The clipboard to read the current content from. While Spotty owns the
+/// clipboard (an entry was just picked) the native one is read, so our own
+/// content is not re-captured through the mirror as a foreign copy (which
+/// would add a bogus File entry for a cached image and a duplicate image).
+fn watch_clipboard() -> gdk::Clipboard {
+    let native = gdk::Display::default()
+        .expect("clipboard watcher needs a display")
+        .clipboard();
+    // A clipboard nothing has claimed yet also reports `is_local`, so look
+    // for content Spotty actually set.
+    if native.is_local() && native.content().is_some() {
+        return native;
+    }
+    xwayland_clipboard().unwrap_or(native)
 }
 
 fn remember_suppressed<T: PartialEq>(items: &mut Vec<T>, item: T) {
@@ -420,8 +474,13 @@ fn read_current_clipboard(
     last_file_hash: &Rc<RefCell<Option<u64>>>,
 ) {
     if !crate::security::clipboard_capture_enabled() { return; }
-    log::debug!("clipboard: read_current_clipboard called");
     let formats = cb.formats();
+    log::debug!(
+        "clipboard: reading {} (local: {}, formats: {})",
+        cb.display().type_().name(),
+        cb.is_local(),
+        formats.to_str()
+    );
     // Password providers explicitly mark sensitive clipboard content. Never
     // request its text or persist it in Spotty's history.
     if formats.contain_mime_type("x-kde-passwordManagerHint") {
