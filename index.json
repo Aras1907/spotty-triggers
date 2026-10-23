@@ -222,10 +222,10 @@
     "word": "translate",
     "description": "Translate text as you type — detects the language, free, no account needed",
     "icon": "tools-check-spelling-symbolic",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "author": "spotty",
     "shortcut": "",
-    "long_description": "Translates text as you type. The language is detected automatically and the result is shown in your system language; text already in your system language goes to English. Single words also show alternative translations. Uses Google Translate's free service by default, with no account or key. In Settings you can switch to MyMemory, LibreTranslate, DeepL, Google Cloud, Microsoft Translator, Yandex or Kagi; services that need an API key say so, and keys stay in your keyring. Enter copies the translation.",
+    "long_description": "Translates text as you type. The language is detected automatically and the result is shown in your system language; text already in your system language goes to English. Single words also show alternative translations. Uses Google Translate's free service by default, with no account or key. In Settings you can switch to MyMemory, DeepL, Google Cloud, Microsoft Translator, Yandex or Kagi; services that need an API key say so, and keys stay in your keyring. Enter copies the translation.",
     "examples": [
       "translate hello",
       "translate \"bonjour\" in english",

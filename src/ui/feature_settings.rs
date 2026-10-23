@@ -932,7 +932,7 @@ fn open_updates_dialog(parent: &adw::PreferencesWindow, config: &Rc<RefCell<Conf
 
 /// The translate trigger's service choice: every supported service, whether
 /// it needs an API key, the key itself (stored in the keyring, never in
-/// config.json) and the server/region fields the service needs.
+/// config.json) and the region field Azure needs.
 pub(super) fn translate_group(
     config: &Rc<RefCell<Config>>,
     toast: Rc<dyn Fn(&str)>,
@@ -954,19 +954,7 @@ pub(super) fn translate_group(
         .use_markup(false)
         .build();
     combo.set_model(Some(&gtk::StringList::new(&label_refs)));
-    let current = {
-        let c = config.borrow();
-        let picked = c.translate_provider.trim().to_string();
-        if !picked.is_empty() {
-            picked
-        } else if c.translate_endpoint.trim().trim_end_matches('/')
-            != Config::default().translate_endpoint
-        {
-            translate_api::LIBRE.to_string()
-        } else {
-            translate_api::GOOGLE.to_string()
-        }
-    };
+    let current = config.borrow().translate_provider.trim().to_string();
     combo.set_selected(PROVIDERS.iter().position(|p| p.id == current).unwrap_or(0) as u32);
     group.add(&combo);
 
@@ -987,13 +975,6 @@ pub(super) fn translate_group(
 
     let key_row = adw::PasswordEntryRow::builder().show_apply_button(true).build();
     group.add(&key_row);
-    let server_row = adw::EntryRow::builder()
-        .title(gettext("Server"))
-        .text(&config.borrow().translate_endpoint)
-        .show_apply_button(true)
-        .use_markup(false)
-        .build();
-    group.add(&server_row);
     let region_row = adw::EntryRow::builder()
         .title(gettext("Region (empty = global)"))
         .text(&config.borrow().translate_region)
@@ -1010,18 +991,13 @@ pub(super) fn translate_group(
     let generation = Rc::new(std::cell::Cell::new(0u64));
     let refresh: Rc<dyn Fn()> = {
         let (status, status_icon, remove) = (status.clone(), status_icon.clone(), remove.clone());
-        let (key_row, server_row, region_row) =
-            (key_row.clone(), server_row.clone(), region_row.clone());
+        let (key_row, region_row) = (key_row.clone(), region_row.clone());
         let selected = selected.clone();
         let generation = generation.clone();
         Rc::new(move || {
             let p = selected();
             let need = translate_api::key_need_label(p.key);
-            let sends = if p.id == translate_api::LIBRE {
-                gettext("Sends your text to the server below.")
-            } else {
-                gettext("Sends your text to {host}.").replace("{host}", p.host)
-            };
+            let sends = gettext("Sends your text to {host}.").replace("{host}", p.host);
             status.set_title(&need);
             status.set_subtitle(&format!("{} {sends}", gettext(p.hint)));
             status_icon.set_icon_name(Some(if p.key == KeyNeed::Required {
@@ -1032,7 +1008,6 @@ pub(super) fn translate_group(
             remove.set_visible(false);
             key_row.set_visible(p.key != KeyNeed::None);
             key_row.set_title(&gettext(p.key_label));
-            server_row.set_visible(p.id == translate_api::LIBRE);
             region_row.set_visible(p.id == "azure");
             if p.key == KeyNeed::None {
                 return;
@@ -1127,16 +1102,6 @@ pub(super) fn translate_group(
                 refresh();
                 crate::app::refresh_search_window();
             });
-        });
-    }
-    {
-        let cfg = config.clone();
-        server_row.connect_apply(move |row| {
-            let mut c = cfg.borrow_mut();
-            c.translate_endpoint = row.text().trim().to_string();
-            c.save();
-            drop(c);
-            crate::app::refresh_search_window();
         });
     }
     {

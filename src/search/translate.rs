@@ -6,9 +6,8 @@
 //!    (`translate.googleapis.com`, no account or key). The typed text is
 //!    sent there over HTTPS, in the request body (never in argv/URLs);
 //!  * **picked in Settings** (`config.translate_provider`): MyMemory,
-//!    LibreTranslate, DeepL, Google Cloud, Azure, Yandex or Kagi — see
-//!    `translate_api.rs`. Older configs without a pick fall back to
-//!    LibreTranslate when `config.translate_endpoint` was changed.
+//!    DeepL, Google Cloud, Azure, Yandex or Kagi — see `translate_api.rs`.
+//!    Nothing runs or is installed locally: every service is a web API.
 //!
 //! Behaviour (Raycast-style, all inside the launcher):
 //!  * **live**: the source language is detected and the text is translated
@@ -28,7 +27,7 @@ use crate::search::translate_api;
 use crate::search::{Action, ResultKind, SearchResult};
 use gtk::glib;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -37,18 +36,11 @@ const AUTO_DELAY: Duration = Duration::from_millis(400);
 /// After a failed call, don't hammer the engine on every keystroke
 /// (the wait folds into the debounce delay instead of blocking it).
 const FAIL_BACKOFF: Duration = Duration::from_secs(4);
-/// …same for the supported-language list of a LibreTranslate server.
-const LANGS_BACKOFF: Duration = Duration::from_secs(15);
-/// Call budget for one translation: a local engine can stall on its very
-/// first request while it warms its models; later calls are quick.
-const TRANSLATE_TIMEOUT: u64 = 30;
 /// The free endpoint answers quickly or not at all.
 const GOOGLE_TIMEOUT: u64 = 10;
 /// Google's free endpoint rejects longer text.
 const GOOGLE_MAX_CHARS: usize = 5000;
 const GOOGLE_URL: &str = "https://translate.googleapis.com/translate_a/single";
-/// The command offered when a configured local LibreTranslate isn't running.
-const SETUP_CMD: &str = "pip install libretranslate";
 /// Dictionary alternatives shown under a single-word translation.
 const MAX_ALTS: usize = 6;
 
@@ -82,11 +74,10 @@ struct Cached {
     alts: Vec<Alt>,
 }
 
-/// A failed attempt; `connect` marks "the engine couldn't be reached".
+/// A failed attempt.
 #[derive(Debug, Clone)]
 struct FetchErr {
     msg: String,
-    connect: bool,
 }
 
 /// Where translations come from.
@@ -94,9 +85,6 @@ struct FetchErr {
 enum Backend {
     /// Google's free endpoint (the default).
     Google,
-    /// A LibreTranslate server the user configured. `api_key` is the old
-    /// key from config.json; a key in the keyring takes over when it is empty.
-    Libre { endpoint: String, api_key: String },
     /// Another service from [`translate_api::PROVIDERS`] (DeepL, Kagi, …).
     /// Its key is read from the keyring when a request is made.
     Api { id: String, region: String },
@@ -106,20 +94,10 @@ impl Backend {
     fn translate(&self, text: &str, source: &str, target: &str) -> Result<Cached, FetchErr> {
         let mut c = match self {
             Backend::Google => post_google(text, source, target)?,
-            Backend::Libre { endpoint, api_key } => {
-                let stored;
-                let key = if api_key.is_empty() {
-                    stored = stored_key(translate_api::LIBRE).unwrap_or_default();
-                    stored.as_str()
-                } else {
-                    api_key.as_str()
-                };
-                post_translate(endpoint, text, source, target, key)?
-            }
             Backend::Api { id, region } => {
                 let key = stored_key(id);
                 let t = translate_api::translate(id, key.as_deref(), region, text, source, target)
-                    .map_err(|e| FetchErr { msg: e.msg, connect: e.connect })?;
+                    .map_err(|e| FetchErr { msg: e.msg })?;
                 Cached { translated: t.text, src: t.src, ..Default::default() }
             }
         };
@@ -141,26 +119,6 @@ fn stored_key(id: &str) -> Option<String> {
         }
     }
 }
-
-/// Fallback picker for LibreTranslate until `/languages` answers — its
-/// standard set, so the UI is usable before the engine has ever replied.
-const DEFAULT_LANGS: &[(&str, &str)] = &[
-    ("ar", "Arabic"), ("az", "Azerbaijani"), ("bg", "Bulgarian"),
-    ("bn", "Bengali"), ("ca", "Catalan"), ("cs", "Czech"), ("cy", "Welsh"),
-    ("da", "Danish"), ("de", "German"), ("el", "Greek"), ("en", "English"),
-    ("eo", "Esperanto"), ("es", "Spanish"), ("et", "Estonian"),
-    ("fa", "Persian"), ("fi", "Finnish"), ("fr", "French"), ("ga", "Irish"),
-    ("gl", "Galician"), ("he", "Hebrew"), ("hi", "Hindi"), ("hu", "Hungarian"),
-    ("id", "Indonesian"), ("it", "Italian"), ("ja", "Japanese"),
-    ("kk", "Kazakh"), ("ko", "Korean"), ("lt", "Lithuanian"),
-    ("lv", "Latvian"), ("ms", "Malay"), ("nb", "Norwegian"),
-    ("ne", "Nepali"), ("nl", "Dutch"), ("nn", "Nynorsk"), ("pl", "Polish"),
-    ("pt", "Portuguese"), ("ro", "Romanian"), ("ru", "Russian"),
-    ("sk", "Slovak"), ("sl", "Slovenian"), ("sq", "Albanian"),
-    ("sv", "Swedish"), ("sw", "Swahili"), ("th", "Thai"), ("tr", "Turkish"),
-    ("uk", "Ukrainian"), ("ur", "Urdu"), ("vi", "Vietnamese"),
-    ("zh", "Chinese"),
-];
 
 /// Languages of the free Google endpoint (modern codes; the legacy ones it
 /// reports on detection are folded in by [`normalize_code`]).
@@ -198,17 +156,10 @@ const GOOGLE_LANGS: &[(&str, &str)] = &[
 const LANG_ALIASES: &[(&str, &str)] =
     &[("no", "nb"), ("iw", "he"), ("in", "id"), ("jw", "jv"), ("fil", "tl")];
 
-static LANGS: LazyLock<RwLock<Vec<LangInfo>>> = LazyLock::new(|| RwLock::new(Vec::new()));
-/// 0 = needs fetching, 1 = in flight, 2 = loaded.
-static LANGS_STATE: AtomicU8 = AtomicU8::new(0);
-static LANGS_RETRY_AT: LazyLock<Mutex<Option<Instant>>> =
-    LazyLock::new(|| Mutex::new(None));
 /// (text, source, target) → result; keyed so a stale answer (or one for a
 /// different language direction) can never show up under a newer query.
 static CACHE: LazyLock<RwLock<HashMap<(String, String, String), Result<Cached, String>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
-/// The last failure was a connection failure → offer the setup row.
-static ENGINE_DOWN: AtomicBool = AtomicBool::new(false);
 
 /// Which picker is expanded next to the typed text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,39 +224,11 @@ fn session<R>(f: impl FnOnce(&mut Session) -> R) -> R {
     f(&mut guard)
 }
 
-/// Make the endpoint usable as a base URL: default when empty, scheme when
-/// missing, no trailing slash.
-fn normalize_endpoint(raw: &str) -> String {
-    let mut s = raw.trim().trim_end_matches('/').to_string();
-    if s.is_empty() {
-        s = Config::default().translate_endpoint;
-    }
-    if !s.contains("://") {
-        s = format!("http://{s}");
-    }
-    s
-}
-
-/// The service picked in Settings. With none picked (older configs): the
-/// free Google endpoint, unless a LibreTranslate server was configured (an
-/// endpoint other than the untouched default).
+/// The service picked in Settings; the free Google endpoint when none (or
+/// one Spotty no longer offers) is picked.
 fn backend_for(config: &Config) -> Backend {
-    let raw = config.translate_endpoint.trim();
-    let libre = || Backend::Libre {
-        endpoint: normalize_endpoint(raw),
-        api_key: config.translate_api_key.clone(),
-    };
     match config.translate_provider.trim() {
-        "" => {
-            let default = Config::default().translate_endpoint;
-            if raw.is_empty() || normalize_endpoint(raw) == normalize_endpoint(&default) {
-                Backend::Google
-            } else {
-                libre()
-            }
-        }
         translate_api::GOOGLE => Backend::Google,
-        translate_api::LIBRE => libre(),
         id if translate_api::provider(id).is_some() => Backend::Api {
             id: id.to_string(),
             region: config.translate_region.trim().to_string(),
@@ -438,15 +361,11 @@ fn to_langs(list: &[(&str, &str)]) -> Vec<LangInfo> {
         .collect()
 }
 
-/// Supported languages of the active engine: Google's fixed set, or what
-/// the LibreTranslate server reported (else its standard set).
+/// Supported languages of the active engine: the service's own list, else
+/// Google's fixed set.
 fn langs() -> Vec<LangInfo> {
     let backend = session(|s| s.backend.clone());
     let mut list = match backend {
-        Some(Backend::Libre { .. }) => match LANGS.read() {
-            Ok(g) if !g.is_empty() => g.clone(),
-            _ => to_langs(DEFAULT_LANGS),
-        },
         Some(Backend::Api { id, .. }) => {
             to_langs(translate_api::langs(&id).unwrap_or(GOOGLE_LANGS))
         }
@@ -462,88 +381,6 @@ fn lang_name(langs: &[LangInfo], code: &str) -> String {
         .find(|l| same_lang(&l.code, code))
         .map(|l| l.name.clone())
         .unwrap_or_else(|| code.to_string())
-}
-
-/// Fetch the engine's supported languages once (retries with backoff while
-/// it's down) so the picker reflects what this instance can really do.
-fn ensure_langs(endpoint: &str) {
-    if LANGS_STATE.load(Ordering::SeqCst) == 2 {
-        return;
-    }
-    if LANGS_STATE.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        return;
-    }
-    if let Ok(g) = LANGS_RETRY_AT.lock() {
-        if let Some(at) = *g {
-            if at.elapsed() < LANGS_BACKOFF {
-                LANGS_STATE.store(0, Ordering::SeqCst);
-                return;
-            }
-        }
-    }
-    let endpoint = endpoint.to_string();
-    std::thread::spawn(move || {
-        let got = crate::triggers::fetch_text(&format!("{endpoint}/languages"))
-            .ok()
-            .and_then(|body| parse_languages(&body).ok())
-            .filter(|l| !l.is_empty());
-        match got {
-            Some(list) => {
-                if let Ok(mut g) = LANGS.write() {
-                    *g = list;
-                }
-                LANGS_STATE.store(2, Ordering::SeqCst);
-                glib::MainContext::default().invoke(|| crate::app::refresh_search_window());
-            }
-            None => {
-                LANGS_STATE.store(0, Ordering::SeqCst);
-                if let Ok(mut g) = LANGS_RETRY_AT.lock() {
-                    *g = Some(Instant::now());
-                }
-            }
-        }
-    });
-}
-
-/// Parse `GET /languages` → sorted picker entries.
-fn parse_languages(body: &str) -> Result<Vec<LangInfo>, String> {
-    let v: serde_json::Value = serde_json::from_str(body).map_err(|_| "not json".to_string())?;
-    let arr = v.as_array().ok_or_else(|| "not an array".to_string())?;
-    let mut out = Vec::new();
-    for item in arr {
-        let code = item.get("code").and_then(|c| c.as_str()).unwrap_or("");
-        if code.is_empty() {
-            continue;
-        }
-        let name =
-            item.get("name").and_then(|n| n.as_str()).unwrap_or(code).to_string();
-        out.push(LangInfo { code: code.to_string(), name });
-    }
-    if out.is_empty() {
-        return Err("no languages".into());
-    }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    Ok(out)
-}
-
-/// Parse LibreTranslate's `POST /translate` → translation + detected source.
-fn parse_translation(body: &str) -> Result<Cached, String> {
-    let v: serde_json::Value =
-        serde_json::from_str(body).map_err(|_| gettext("empty response"))?;
-    if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
-        return Err(err.to_string());
-    }
-    let translated = v
-        .get("translatedText")
-        .and_then(|t| t.as_str())
-        .ok_or_else(|| gettext("empty response"))?
-        .to_string();
-    let src = v
-        .get("detectedLanguage")
-        .and_then(|d| d.get("language"))
-        .and_then(|l| l.as_str())
-        .map(|s| s.to_string());
-    Ok(Cached { translated, src, ..Default::default() })
 }
 
 /// Parse the free Google endpoint's `dj=1` answer: the sentences joined,
@@ -616,7 +453,6 @@ fn post_google(text: &str, source: &str, target: &str) -> Result<Cached, FetchEr
         return Err(FetchErr {
             msg: gettext("text is longer than {n} characters")
                 .replace("{n}", &GOOGLE_MAX_CHARS.to_string()),
-            connect: false,
         });
     }
     let body = google_form(text);
@@ -627,64 +463,18 @@ fn post_google(text: &str, source: &str, target: &str) -> Result<Cached, FetchEr
         GOOGLE_TIMEOUT,
         true,
     )
-    .map_err(|e| FetchErr { msg: e.to_string(), connect: true })?;
+    .map_err(|e| FetchErr { msg: e.to_string() })?;
     if !out.status.success() {
         let code = out.status.code();
-        let connect = matches!(code, Some(6 | 7 | 28 | 35 | 52 | 56));
         return Err(FetchErr {
             msg: match code {
                 Some(22) => gettext("the service refused the request — try again shortly"),
-                _ if connect => gettext("no connection to translate.googleapis.com"),
+                Some(6 | 7 | 28 | 35 | 52 | 56) => gettext("no connection to translate.googleapis.com"),
                 _ => format!("curl ({code:?})"),
             },
-            connect,
         });
     }
-    parse_google(&String::from_utf8_lossy(&out.stdout))
-        .map_err(|msg| FetchErr { msg, connect: false })
-}
-
-/// One POST to LibreTranslate; `connect` flags "the engine isn't running"
-/// so the UI can say how to start it instead of showing a bare failure.
-fn post_translate(
-    endpoint: &str,
-    text: &str,
-    source: &str,
-    target: &str,
-    api_key: &str,
-) -> Result<Cached, FetchErr> {
-    let mut obj = serde_json::Map::new();
-    obj.insert("q".into(), serde_json::Value::String(text.to_string()));
-    // "auto" = the engine detects the source; an explicit code overrides
-    // auto-detection for this session.
-    obj.insert("source".into(), serde_json::Value::String(source.to_string()));
-    obj.insert("target".into(), serde_json::Value::String(target.to_string()));
-    obj.insert("format".into(), serde_json::json!("text"));
-    if !api_key.is_empty() {
-        obj.insert("api_key".into(), serde_json::Value::String(api_key.to_string()));
-    }
-    let body = serde_json::Value::Object(obj).to_string();
-    let url = format!("{endpoint}/translate");
-    let out = crate::security::curl_request(&url, Some(body.as_bytes()), 1_048_576,
-        TRANSLATE_TIMEOUT, true)
-        .map_err(|e| FetchErr { msg: e.to_string(), connect: true })?;
-    if !out.status.success() {
-        let code = out.status.code();
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let stderr = stderr.trim().to_string();
-        return Err(FetchErr {
-            msg: if stderr.is_empty() {
-                format!("curl ({code:?})")
-            } else {
-                stderr
-            },
-            // 6 = couldn't resolve, 7 = refused, 28 = timeout, 52/56 = early
-            // close — i.e. nothing usable is listening.
-            connect: matches!(code, Some(6 | 7 | 28 | 52 | 56)),
-        });
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    parse_translation(&text).map_err(|msg| FetchErr { msg, connect: false })
+    parse_google(&String::from_utf8_lossy(&out.stdout)).map_err(|msg| FetchErr { msg })
 }
 
 type CacheKey = (String, String, String);
@@ -789,14 +579,8 @@ fn start_fetch(job: Job) {
         glib::MainContext::default().invoke(move || {
             session(|s| {
                 match &res {
-                    Ok(_) => {
-                        ENGINE_DOWN.store(false, Ordering::SeqCst);
-                        s.last_fail = None;
-                    }
-                    Err(e) => {
-                        ENGINE_DOWN.store(e.connect, Ordering::SeqCst);
-                        s.last_fail = Some(Instant::now());
-                    }
+                    Ok(_) => s.last_fail = None,
+                    Err(_) => s.last_fail = Some(Instant::now()),
                 }
                 if s.pending.as_ref() == Some(&key) {
                     s.pending = None;
@@ -907,10 +691,6 @@ struct Snapshot<'a> {
     expanded: Option<Picker>,
     /// None = not asked yet, Some(Ok) = translation, Some(Err) = failed.
     cached: Option<Result<Cached, String>>,
-    /// The endpoint could not be reached last time.
-    engine_down: bool,
-    /// A LibreTranslate server is configured (enables the setup hint).
-    local_engine: bool,
     /// The target was typed inline ("… in english"): no suggestions for it.
     inline: bool,
 }
@@ -1210,17 +990,6 @@ fn render(s: &Snapshot) -> Vec<SearchResult> {
     // The translation itself — first row, always — then its alternatives.
     out.push(translation_row(s));
     push_alt_rows(&mut out, s, &icon);
-    // Configured local engine unreachable → say how to start it.
-    if s.local_engine && s.engine_down && matches!(s.cached, Some(Err(_))) {
-        out.push(SearchResult {
-            kind: ResultKind::Translate,
-            title: gettext("Local translation engine not reachable"),
-            subtitle: Some(SETUP_CMD.into()),
-            icon: locale_icon.clone(),
-            action: Action::CopyToClipboard(SETUP_CMD.into()),
-            score: 96_000,
-        });
-    }
     // Typing a language after the text ("hello po") offers it as target.
     let token = if s.inline { None } else { trailing_token(s.rest) };
     let suggestions: Vec<&LangInfo> = token
@@ -1278,16 +1047,12 @@ fn results_with(
         changed
     });
     if switched {
-        // Another service (or server): earlier answers and failures are
+        // Another service: earlier answers and failures are
         // not this one's.
         if let Ok(mut m) = CACHE.write() {
             m.clear();
         }
-        ENGINE_DOWN.store(false, Ordering::SeqCst);
         session(|s| s.last_fail = None);
-    }
-    if let Backend::Libre { endpoint, .. } = &backend {
-        ensure_langs(endpoint);
     }
     let default = target_code(config);
     session(|s| s.default_target = default.clone());
@@ -1317,8 +1082,6 @@ fn results_with(
         langs: &langs,
         expanded,
         cached: cached.clone(),
-        engine_down: ENGINE_DOWN.load(Ordering::SeqCst),
-        local_engine: matches!(backend, Backend::Libre { .. }),
         inline: inline.is_some(),
     };
     let rows = render(&snap);
@@ -1360,8 +1123,6 @@ mod tests {
             langs,
             expanded: None,
             cached: None,
-            engine_down: false,
-            local_engine: false,
             inline: false,
         }
     }
@@ -1432,14 +1193,6 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_defaults_to_the_local_instance() {
-        assert_eq!(normalize_endpoint(""), "http://localhost:5000");
-        assert_eq!(normalize_endpoint("localhost:5000"), "http://localhost:5000");
-        assert_eq!(normalize_endpoint("http://127.0.0.1:5000/"), "http://127.0.0.1:5000");
-        assert_eq!(normalize_endpoint("https://mt.local"), "https://mt.local");
-    }
-
-    #[test]
     fn system_locale_maps_to_a_supported_code() {
         let l = sample_langs();
         assert_eq!(map_to_supported("es", &l), "en"); // not offered → English
@@ -1458,30 +1211,6 @@ mod tests {
         assert!(!target_code(&cfg).is_empty());
         cfg.translate_target = "DE".into();
         assert_eq!(target_code(&cfg), "de");
-    }
-
-    #[test]
-    fn parse_translation_reads_text_and_detection() {
-        let body = r#"{"detectedLanguage":{"confidence":97.0,"language":"fr"},"translatedText":"Hello!"}"#;
-        let c = parse_translation(body).unwrap();
-        assert_eq!(c.translated, "Hello!");
-        assert_eq!(c.src.as_deref(), Some("fr"));
-        // Engine-level error surfaces as an error, not as a translation.
-        assert!(parse_translation(r#"{"error":"Invalid target language"}"#).is_err());
-        assert!(parse_translation("not json").is_err());
-        assert!(parse_translation("{}").is_err());
-    }
-
-    #[test]
-    fn parse_languages_is_sorted_and_named() {
-        let body = r#"[{"code":"pt","name":"Portuguese","targets":["en"]},
-                       {"code":"en","name":"English","targets":["es"]},
-                       {"code":"de","name":"German","targets":["en"]}]"#;
-        let list = parse_languages(body).unwrap();
-        let names: Vec<_> = list.iter().map(|l| l.name.as_str()).collect();
-        assert_eq!(names, vec!["English", "German", "Portuguese"]);
-        assert!(parse_languages("[]").is_err());
-        assert!(parse_languages("{}").is_err());
     }
 
     #[test]
@@ -1548,29 +1277,15 @@ mod tests {
     }
 
     #[test]
-    fn failed_row_offers_retry_and_setup_when_engine_is_down() {
+    fn failed_row_offers_retry() {
         let l = sample_langs();
         let mut s = snap("hola", "en", &l);
         s.cached = Some(Err("curl (7)".into()));
         let rows = render(&s);
         assert!(rows[0].subtitle.as_deref().unwrap().contains("Translation unavailable"));
         assert!(matches!(rows[0].action, Action::TranslateNow { .. }));
-
-        // Google failing: no LibreTranslate setup hint.
-        s.engine_down = true;
-        let rows = render(&s);
-        assert!(!rows.iter().any(|r| r.title == "Local translation engine not reachable"));
-
-        s.local_engine = true;
-        let rows = render(&s);
-        let setup = rows
-            .iter()
-            .find(|r| r.title == "Local translation engine not reachable")
-            .expect("setup row while the engine is down");
-        assert_eq!(
-            setup.action,
-            Action::CopyToClipboard(SETUP_CMD.into())
-        );
+        // Nothing to install or start locally: no setup row.
+        assert!(!rows.iter().any(|r| matches!(&r.action, Action::CopyToClipboard(c) if c.contains("pip"))));
     }
 
     #[test]
@@ -1690,17 +1405,14 @@ mod tests {
     }
 
     #[test]
-    fn default_endpoint_uses_the_free_google_backend() {
+    fn the_free_google_backend_is_the_default() {
         let mut cfg = Config::default();
         assert_eq!(backend_for(&cfg), Backend::Google);
-        cfg.translate_endpoint = String::new();
+        // LibreTranslate was removed: an old pick falls back to Google.
+        cfg.translate_provider = "libretranslate".into();
         assert_eq!(backend_for(&cfg), Backend::Google);
-        cfg.translate_endpoint = "https://mt.example.org/".into();
-        cfg.translate_api_key = "k".into();
-        assert_eq!(
-            backend_for(&cfg),
-            Backend::Libre { endpoint: "https://mt.example.org".into(), api_key: "k".into() }
-        );
+        cfg.translate_provider = "deepl".into();
+        assert_eq!(backend_for(&cfg), Backend::Api { id: "deepl".into(), region: String::new() });
     }
 
     #[test]
@@ -1712,8 +1424,6 @@ mod tests {
         let g = to_langs(GOOGLE_LANGS);
         assert_eq!(map_to_supported("zh-tw", &g), "zh-tw");
         assert_eq!(map_to_supported("no", &g), "nb");
-        // LibreTranslate only has plain "zh".
-        assert_eq!(map_to_supported("zh-tw", &to_langs(DEFAULT_LANGS)), "zh");
     }
 
     #[test]
@@ -1823,11 +1533,6 @@ mod tests {
         assert!(!c.alts.is_empty(), "single words carry dictionary alternatives");
     }
 
-    #[test]
-    fn setup_command_is_offered_as_plain_text() {
-        assert_eq!(SETUP_CMD, "pip install libretranslate");
-    }
-
     /// The search calls `results()` on a background job thread. It used to
     /// panic there (glib timer off the main thread), so the job delivered
     /// nothing and the UI stayed stuck on the previous rows — the exact
@@ -1840,63 +1545,5 @@ mod tests {
             .expect("results() must not panic off the main thread");
         assert!(rows.iter().any(|r| r.kind == ResultKind::Translate));
         assert_eq!(rows[0].subtitle.as_deref(), Some("Translating…"));
-    }
-
-    /// Real end-to-end path — curl → a local HTTP server → parse. Bound to
-    /// 127.0.0.1 only: this exercises the whole request/quote/parse chain
-    /// without touching anything external.
-    #[test]
-    fn post_translate_round_trips_against_a_local_server() {
-        use std::io::{Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        std::thread::spawn(move || {
-            let Ok((mut sock, _)) = listener.accept() else { return };
-            let mut data: Vec<u8> = Vec::new();
-            let mut buf = [0u8; 4096];
-            loop {
-                let Ok(n) = sock.read(&mut buf) else { break };
-                if n == 0 {
-                    break;
-                }
-                data.extend_from_slice(&buf[..n]);
-                if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
-                    let head = String::from_utf8_lossy(&data[..pos]).to_ascii_lowercase();
-                    let cl = head
-                        .lines()
-                        .find(|l| l.starts_with("content-length:"))
-                        .and_then(|l| l.split(':').nth(1))
-                        .and_then(|v| v.trim().parse::<usize>().ok())
-                        .unwrap_or(0);
-                    if data.len() >= pos + 4 + cl {
-                        break;
-                    }
-                }
-            }
-            let _ = tx.send(data);
-            let body = r#"{"detectedLanguage":{"confidence":97.0,"language":"es"},"translatedText":"hello"}"#;
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = sock.write_all(resp.as_bytes());
-        });
-
-        let got = post_translate(&format!("http://{addr}"), "hola mundo", "auto", "en", "")
-            .expect("local round trip");
-        assert_eq!(got.translated, "hello");
-        assert_eq!(got.src.as_deref(), Some("es"));
-
-        let req = rx
-            .recv_timeout(Duration::from_secs(10))
-            .expect("the request should reach the local server");
-        let req = String::from_utf8_lossy(&req);
-        assert!(req.starts_with("POST /translate"), "{req}");
-        assert!(req.contains(r#""source":"auto""#), "{req}");
-        assert!(req.contains(r#""target":"en""#), "{req}");
-        assert!(req.contains("hola mundo"), "{req}");
-        assert!(!req.contains("api_key"), "{req}");
     }
 }

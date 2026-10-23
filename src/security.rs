@@ -113,8 +113,7 @@ pub fn http_uri(url: &str) -> Result<glib::Uri, String> {
     Ok(uri)
 }
 
-/// Network fetches need TLS, except explicitly local services such as
-/// LibreTranslate. HTTPS redirects cannot downgrade to plaintext HTTP.
+/// Network fetches need TLS; redirects stay on HTTPS too.
 pub fn curl_request(url: &str, body: Option<&[u8]>, limit: usize, seconds: u64,
                     fail_http: bool) -> io::Result<Output> {
     curl_send(url, body, "application/json", limit, seconds, fail_http)
@@ -129,21 +128,16 @@ pub fn curl_post_form(url: &str, body: &[u8], limit: usize, seconds: u64,
 
 fn curl_send(url: &str, body: Option<&[u8]>, content_type: &str, limit: usize, seconds: u64,
              fail_http: bool) -> io::Result<Output> {
-    let uri = http_uri(url).map_err(io::Error::other)?;
-    let secure = uri.scheme().as_str() == "https";
-    let host = uri.host().unwrap();
-    if !secure && !matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "[::1]") {
-        return Err(io::Error::other("Remote services require HTTPS"));
-    }
+    require_https(url)?;
     if body.is_some_and(|b| b.len() > 1_048_576) {
         return Err(io::Error::other("Request exceeds 1 MiB"));
     }
     let mut cmd = crate::app::host_process("curl");
     // -q must be first: ignore curlrc overrides of TLS, proxy or output options.
-    cmd.args(["-q", "-sS", "--proto", "=http,https", "--proto-redir", "=https",
+    cmd.args(["-q", "-sS", "--proto", "=https", "--proto-redir", "=https",
               "--max-redirs", "5", "--connect-timeout", "4", "--max-time", &seconds.to_string(),
               "--max-filesize", &limit.to_string(), "--url", url]);
-    if secure && body.is_none() { cmd.arg("-L"); }
+    if body.is_none() { cmd.arg("-L"); }
     if fail_http { cmd.arg("-f"); }
     if body.is_some() {
         cmd.args(["-H", &format!("Content-Type: {content_type}"), "--data-binary", "@-"]);
@@ -201,19 +195,14 @@ fn curl_config(url: &str, headers: &[(&str, &str)], body: Option<(&str, &str)>) 
 /// so the service's own error message can be shown.
 pub fn curl_with_headers(url: &str, headers: &[(&str, &str)], body: Option<(&str, &str)>,
                          limit: usize, seconds: u64) -> io::Result<HttpReply> {
-    let uri = http_uri(url).map_err(io::Error::other)?;
-    let secure = uri.scheme().as_str() == "https";
-    let host = uri.host().unwrap();
-    if !secure && !matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "[::1]") {
-        return Err(io::Error::other("Remote services require HTTPS"));
-    }
+    require_https(url)?;
     if body.is_some_and(|(_, b)| b.len() > 1_048_576) {
         return Err(io::Error::other("Request exceeds 1 MiB"));
     }
     let cfg = curl_config(url, headers, body)?;
     let mut cmd = crate::app::host_process("curl");
     // -q must be first: ignore curlrc overrides of TLS, proxy or output options.
-    cmd.args(["-q", "-sS", "--proto", "=http,https", "--proto-redir", "=https",
+    cmd.args(["-q", "-sS", "--proto", "=https", "--proto-redir", "=https",
               "--max-redirs", "5", "--connect-timeout", "4", "--max-time", &seconds.to_string(),
               "--max-filesize", &limit.to_string(), "-K", "-"]);
     let out = run_curl(cmd, Some(cfg.into_bytes()), limit + 8)?;
@@ -228,6 +217,15 @@ pub fn curl_with_headers(url: &str, headers: &[(&str, &str)], body: Option<(&str
         body,
         curl_exit: (!out.status.success()).then(|| out.status.code().unwrap_or(-1)),
     })
+}
+
+/// Spotty talks to web services only, and only over HTTPS.
+fn require_https(url: &str) -> io::Result<()> {
+    let uri = http_uri(url).map_err(io::Error::other)?;
+    if uri.scheme().as_str() != "https" {
+        return Err(io::Error::other("Network services require HTTPS"));
+    }
+    Ok(())
 }
 
 /// Run a prepared curl with `input` on stdin; stdout is capped at `limit`.

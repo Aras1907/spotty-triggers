@@ -1,5 +1,5 @@
 //! Translation services the translate trigger can use besides Google's free
-//! endpoint and LibreTranslate (those two live in `translate.rs`).
+//! endpoint (that one lives in `translate.rs`).
 //!
 //! Each service lists whether it needs an API key. Keys come from the
 //! desktop keyring ([`crate::keyring`]) and are sent to curl over stdin
@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyNeed {
     None,
-    Optional,
     Required,
 }
 
@@ -33,7 +32,6 @@ pub struct Provider {
 }
 
 pub const GOOGLE: &str = "google";
-pub const LIBRE: &str = "libretranslate";
 
 /// Every service, in the order the settings list them: no key first.
 pub const PROVIDERS: &[Provider] = &[
@@ -52,14 +50,6 @@ pub const PROVIDERS: &[Provider] = &[
         key_label: "",
         host: "api.mymemory.translated.net",
         hint: "Free, no account needed. Up to 500 bytes per text and a daily limit.",
-    },
-    Provider {
-        id: LIBRE,
-        name: "LibreTranslate",
-        key: KeyNeed::Optional,
-        key_label: "API key",
-        host: "",
-        hint: "Your own server needs no key; libretranslate.com and other hosted servers do.",
     },
     Provider {
         id: "deepl",
@@ -114,11 +104,10 @@ pub fn key_account(id: &str) -> String {
     format!("translate:{id}")
 }
 
-/// "API key required" / "No API key needed" / "API key optional".
+/// "API key required" / "No API key needed".
 pub fn key_need_label(need: KeyNeed) -> String {
     match need {
         KeyNeed::None => gettext("No API key needed"),
-        KeyNeed::Optional => gettext("API key optional"),
         KeyNeed::Required => gettext("API key required"),
     }
 }
@@ -149,15 +138,14 @@ pub struct Translated {
     pub src: Option<String>,
 }
 
-/// A failed request; `connect` = the service was not reached at all.
+/// A failed request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiErr {
     pub msg: String,
-    pub connect: bool,
 }
 
 fn err(msg: impl Into<String>) -> ApiErr {
-    ApiErr { msg: msg.into(), connect: false }
+    ApiErr { msg: msg.into() }
 }
 
 const TIMEOUT: u64 = 15;
@@ -199,18 +187,14 @@ fn send(
     body: Option<(&str, &str)>,
 ) -> Result<String, ApiErr> {
     let reply = crate::security::curl_with_headers(url, headers, body, LIMIT, TIMEOUT)
-        .map_err(|e| ApiErr { msg: e.to_string(), connect: true })?;
+        .map_err(|e| err(e.to_string()))?;
     if let Some(code) = reply.curl_exit {
         if reply.status == 0 {
-            let connect = matches!(code, 6 | 7 | 28 | 35 | 52 | 56);
-            return Err(ApiErr {
-                msg: if connect {
-                    gettext("no connection to the translation service")
-                } else {
-                    format!("curl ({code})")
-                },
-                connect,
-            });
+            return Err(err(if matches!(code, 6 | 7 | 28 | 35 | 52 | 56) {
+                gettext("no connection to the translation service")
+            } else {
+                format!("curl ({code})")
+            }));
         }
     }
     let body = String::from_utf8_lossy(&reply.body).into_owned();
@@ -564,7 +548,7 @@ mod tests {
     fn every_service_says_whether_it_needs_a_key() {
         assert_eq!(provider(GOOGLE).unwrap().key, KeyNeed::None);
         assert_eq!(provider("mymemory").unwrap().key, KeyNeed::None);
-        assert_eq!(provider(LIBRE).unwrap().key, KeyNeed::Optional);
+        assert!(provider("libretranslate").is_none());
         for id in ["deepl", "google-cloud", "azure", "yandex", "kagi"] {
             assert_eq!(provider(id).unwrap().key, KeyNeed::Required, "{id}");
         }
@@ -577,7 +561,6 @@ mod tests {
     fn a_missing_required_key_is_reported_without_a_request() {
         let e = translate("deepl", None, "", "hello", "auto", "de").unwrap_err();
         assert!(e.msg.contains("DeepL needs an API key"));
-        assert!(!e.connect);
         let e = translate("kagi", Some("  "), "", "hello", "auto", "de").unwrap_err();
         assert!(e.msg.contains("Kagi Translate needs an API key"));
     }
