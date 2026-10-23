@@ -53,6 +53,7 @@ const ROW_THUMB_EXTS: &[&str] = &[
     "pptx", "ppsx", "pps", "ppt", "pptm", "ppsm", "potx", "potm", "odp", "otp", "fodp",
     "docx", "doc", "odt", "ott", "fodt", "rtf", "wps",
     "xlsx", "xls", "ods", "ots", "fods", "csv",
+    "stl", "obj", "ply", "off", "glb", "gltf", "3mf", "blend", "blend1",
 ];
 
 /// Image files whose row overview is the image itself, downscaled — for a
@@ -71,6 +72,13 @@ pub fn request(icon: &gtk::Image, path: &Path) {
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
     if !ROW_THUMB_EXTS.contains(&ext.as_str()) && !IMAGE_ROW_EXTS.contains(&ext.as_str()) {
+        return;
+    }
+    // Settings → Find → Previews: thumbnails off, or this file type off.
+    let kind = crate::preview::kind_for_ext(&ext);
+    if !crate::preview::row_thumbnails_enabled()
+        || kind.is_some_and(|k| !crate::preview::kind_enabled(k))
+    {
         return;
     }
     let meta = match std::fs::metadata(path) {
@@ -180,6 +188,19 @@ pub fn thumbnail_for(path: &Path) -> Option<PathBuf> {
                 return Some(icon);
             }
         }
+        // 3D models: the built-in renderer's overview (Blender files use the
+        // thumbnail saved inside them).
+        e if crate::preview::model3d::is_model_ext(e) => {
+            let (rgba, w, h) = crate::preview::model3d::overview(path, CARD_W, CARD_H)?;
+            let img = image::RgbaImage::from_raw(w, h, rgba)?;
+            let mut buf = Vec::new();
+            image::DynamicImage::ImageRgba8(img)
+                .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+                .ok()?;
+            let _ = crate::security::private_dir(cache_path.parent()?);
+            crate::security::write_private(&cache_path, &buf).ok()?;
+            return Some(cache_path);
+        }
         _ => {}
     }
 
@@ -225,7 +246,7 @@ fn cache_path_for(key: &CacheKey) -> PathBuf {
 /// Shrink the native slide PNG (e.g. 1200×900) to card size so the result
 /// row keeps its layout — the preview pane still shows full resolution.
 fn downscale_slide_icon(full_png: &Path, out: &Path) -> Option<PathBuf> {
-    let img = image::open(full_png).ok()?;
+    let img = crate::imageinfo::open_image(full_png).ok()?;
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
     if w == 0 || h == 0 {
@@ -263,7 +284,7 @@ fn downscale_image_icon(src: &Path, out: &Path) -> Option<PathBuf> {
     if std::fs::metadata(src).ok()?.len() > 64 * 1024 * 1024 {
         return None;
     }
-    let img = image::open(src).ok()?;
+    let img = crate::imageinfo::open_image(src).ok()?;
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
     if w == 0 || h == 0 {

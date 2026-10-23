@@ -4,10 +4,10 @@
   "word": "find",
   "description": "Search all files and folders",
   "icon": "system-search-symbolic",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "spotty",
   "shortcut": "Super+Ctrl+F",
-  "help": "Search file names and contents. Type find followed by your query; an empty query browses files.",
+  "help": "Search file names and contents. Type find followed by your query; an empty query browses files.\n\nThe preview pane shows images, PDF pages, Office documents, videos, audio details, text, archive contents and 3D models (STL, OBJ, PLY, OFF, glTF, 3MF and Blender thumbnails), and result rows show a thumbnail of them. Settings → Triggers → Find → Previews switches thumbnails and each file type on or off.",
   "action": {
     "type": "native"
   },

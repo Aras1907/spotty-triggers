@@ -41,14 +41,27 @@ pub fn info(path: &Path) -> Option<ImageInfo> {
     result
 }
 
+/// Decode an image by its content, not its extension. A JPEG saved as
+/// `photo.png` is common (downloads, screenshots, exports); `image::open`
+/// trusts the extension and fails on those.
+pub(crate) fn open_image(path: &Path) -> image::ImageResult<image::DynamicImage> {
+    image::ImageReader::open(path)?.with_guessed_format()?.decode()
+}
+
 fn info_inner(path: &Path) -> Option<ImageInfo> {
-    let (width, height) = image::image_dimensions(path).ok()?;
+    let reader = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
+    let sniffed = reader.format();
+    let (width, height) = reader.into_dimensions().ok()?;
     let bytes = std::fs::metadata(path).ok()?.len();
-    let format = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.to_uppercase())
-        .unwrap_or_else(|| "PNG".into());
+    let format = match sniffed {
+        Some(image::ImageFormat::Jpeg) => "JPEG".to_string(),
+        Some(f) => format!("{f:?}").to_uppercase(),
+        None => path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_uppercase())
+            .unwrap_or_else(|| "PNG".into()),
+    };
     Some(ImageInfo {
         width,
         height,
@@ -235,5 +248,24 @@ mod tests {
         assert!(t.contains("4:3"));
         assert!(t.contains("landscape"));
         assert!(t.contains("120000 bytes"));
+    }
+}
+
+#[cfg(test)]
+mod sniff_tests {
+    use super::*;
+
+    #[test]
+    fn jpeg_named_png_still_decodes() {
+        let dir = std::env::temp_dir().join(format!("spotty-imginfo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("photo.png");
+        let img = image::RgbImage::from_pixel(8, 4, image::Rgb([200, 30, 30]));
+        img.save_with_format(&path, image::ImageFormat::Jpeg).unwrap();
+        let decoded = open_image(&path).expect("content sniffing should decode it");
+        assert_eq!((decoded.width(), decoded.height()), (8, 4));
+        let info = info_inner(&path).expect("info should read it too");
+        assert_eq!((info.width, info.height, info.format.as_str()), (8, 4, "JPEG"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

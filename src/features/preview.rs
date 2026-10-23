@@ -6,8 +6,144 @@ use std::io::Read;
 use std::path::Path;
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+#[path = "model3d.rs"]
+pub(crate) mod model3d;
+
+// ── Which previews are on (Settings → Find → Previews) ──
+// The switches live in config.json; workers read this copy lock-free.
+
+/// A family of files the preview pane and the row thumbnails can render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewKind {
+    Images,
+    Pdf,
+    Office,
+    Video,
+    Audio,
+    Text,
+    Archives,
+    Models,
+}
+
+impl PreviewKind {
+    /// In the order Settings lists them.
+    pub const ALL: [PreviewKind; 8] = [
+        PreviewKind::Images,
+        PreviewKind::Pdf,
+        PreviewKind::Office,
+        PreviewKind::Video,
+        PreviewKind::Audio,
+        PreviewKind::Text,
+        PreviewKind::Archives,
+        PreviewKind::Models,
+    ];
+
+    /// Stored in `config.preview_off`.
+    pub fn id(self) -> &'static str {
+        match self {
+            PreviewKind::Images => "images",
+            PreviewKind::Pdf => "pdf",
+            PreviewKind::Office => "office",
+            PreviewKind::Video => "video",
+            PreviewKind::Audio => "audio",
+            PreviewKind::Text => "text",
+            PreviewKind::Archives => "archives",
+            PreviewKind::Models => "models",
+        }
+    }
+
+    pub fn title(self) -> String {
+        gettext(match self {
+            PreviewKind::Images => "Images",
+            PreviewKind::Pdf => "PDF documents",
+            PreviewKind::Office => "Office documents",
+            PreviewKind::Video => "Videos",
+            PreviewKind::Audio => "Audio",
+            PreviewKind::Text => "Text and code",
+            PreviewKind::Archives => "Archives",
+            PreviewKind::Models => "3D models",
+        })
+    }
+
+    pub fn subtitle(self) -> String {
+        gettext(match self {
+            PreviewKind::Images => "PNG, JPEG, WebP, GIF, SVG, TIFF, HEIC, AVIF and more",
+            PreviewKind::Pdf => "Rendered pages you can page through",
+            PreviewKind::Office => "Word, Excel, PowerPoint, OpenDocument, RTF and CSV",
+            PreviewKind::Video => "Played in the preview pane",
+            PreviewKind::Audio => "Title, artist, album and length",
+            PreviewKind::Text => "The start of text files and source code",
+            PreviewKind::Archives => "The files inside ZIP, TAR, 7z and other archives",
+            PreviewKind::Models => "STL, OBJ, PLY, OFF, glTF and 3MF, and Blender's saved thumbnail",
+        })
+    }
+
+    fn bit(self) -> u32 {
+        1 << self as u32
+    }
+}
+
+static PREVIEWS_OFF: AtomicU32 = AtomicU32::new(0);
+static ROW_THUMBNAILS: AtomicBool = AtomicBool::new(true);
+
+/// Take the preview switches from the config (at startup and whenever
+/// Settings changes one).
+pub fn apply_settings(config: &crate::config::Config) {
+    let off = PreviewKind::ALL
+        .iter()
+        .filter(|k| config.preview_off.iter().any(|id| id == k.id()))
+        .fold(0, |mask, k| mask | k.bit());
+    PREVIEWS_OFF.store(off, Ordering::Relaxed);
+    ROW_THUMBNAILS.store(config.row_thumbnails, Ordering::Relaxed);
+    // Cached text/archive/audio previews must not outlive their switch.
+    if let Ok(mut cache) = preview_cache().lock() {
+        cache.clear();
+    }
+}
+
+pub fn kind_enabled(kind: PreviewKind) -> bool {
+    PREVIEWS_OFF.load(Ordering::Relaxed) & kind.bit() == 0
+}
+
+/// Whether result rows get rendered overviews instead of type icons.
+pub fn row_thumbnails_enabled() -> bool {
+    ROW_THUMBNAILS.load(Ordering::Relaxed)
+}
+
+fn is_video_ext(ext: &str) -> bool {
+    matches!(
+        ext,
+        "mp4" | "mkv" | "webp" | "mov" | "avi" | "wmv" | "flv" | "m4v"
+            | "mpeg" | "mpg" | "m2ts" | "mts" | "ogv" | "3gp" | "3g2"
+            | "asf" | "rm" | "rmvb" | "vob" | "divx" | "f4v" | "mxf"
+    )
+}
+
+/// The family a (lower-case) extension belongs to. Audio, text and
+/// archives are recognised by content, so they are not named here.
+pub fn kind_for_ext(ext: &str) -> Option<PreviewKind> {
+    Some(match ext {
+        "png" | "jpg" | "jpeg" | "jpe" | "webp" | "gif" | "bmp" | "svg" | "svgz" | "ico"
+        | "tiff" | "tif" | "jxl" | "ppm" | "pgm" | "pbm" | "pnm" | "xpm" | "tga" | "avif"
+        | "heic" | "heif" => PreviewKind::Images,
+        "pdf" => PreviewKind::Pdf,
+        "pptx" | "ppsx" | "pps" | "pptm" | "ppsm" | "potx" | "potm" | "doc" | "docx" | "odt"
+        | "rtf" | "ott" | "fodt" | "wps" | "xls" | "xlsx" | "ods" | "ots" | "fods" | "csv"
+        | "ppt" | "otp" | "fodp" | "odp" => PreviewKind::Office,
+        e if model3d::is_model_ext(e) => PreviewKind::Models,
+        e if is_video_ext(e) => PreviewKind::Video,
+        _ => return None,
+    })
+}
+
+/// Whether the preview pane plays this extension as a video.
+fn plays_as_video(ext: &str) -> bool {
+    is_video_ext(ext) && kind_for_ext(ext).is_some_and(kind_enabled)
+}
 
 // ── Async preview payload delivery slot ──
 // Worker decodes/computes preview data and writes here; a persistent
@@ -800,14 +936,6 @@ impl PreviewPane {
         self.current_stamp.set(file_stamp(p).unwrap_or((0, 0)));
         self.stop_video();
 
-        let is_video_ext = |ext: &str| {
-            matches!(
-                ext,
-                "mp4" | "mkv" | "webp" | "mov" | "avi" | "wmv" | "flv" | "m4v"
-                    | "mpeg" | "mpg" | "m2ts" | "mts" | "ogv" | "3gp" | "3g2"
-                    | "asf" | "rm" | "rmvb" | "vob" | "divx" | "f4v" | "mxf"
-            )
-        };
         let ext = p
             .extension()
             .and_then(|s| s.to_str())
@@ -829,7 +957,7 @@ impl PreviewPane {
                 | "pbm" | "pnm" | "xpm" | "tga" | "avif" | "heic" | "heif"
         );
 
-        if !is_raster_image && !is_video_ext(&ext) {
+        if !is_raster_image && !plays_as_video(&ext) {
             if let Some(cached) = cache_lookup(p) {
                 self.apply_payload(p, &cached);
                 return;
@@ -840,7 +968,7 @@ impl PreviewPane {
         let path = p.to_path_buf();
         let gen_cell = self.preview_gen.clone();
         let db = self.preview_debounce_id.clone();
-        let is_video = is_video_ext(&ext);
+        let is_video = plays_as_video(&ext);
         let pending_flag = self.pending.clone();
         pending_flag.set(true);
 
@@ -1039,6 +1167,8 @@ impl PreviewPane {
                 // while paging; other types keep the file-info caption.
                 if let Some(cap) = office_page_caption(path, page.unwrap_or(1)) {
                     self.image_caption.set_label(&cap);
+                } else if let Some(cap) = model3d::caption_for(path) {
+                    self.image_caption.set_label(&cap);
                 }
                 // Only OCR actual image files — skip PDF/PPTX/office pages.
                 if is_ocrable_image(path) {
@@ -1070,12 +1200,7 @@ impl PreviewPane {
                 // Check if this is a video file — if so, load the video player.
                 let is_video = path.extension()
                     .and_then(|s| s.to_str())
-                    .map(|ext| matches!(ext.to_ascii_lowercase().as_str(),
-                        "mp4" | "mkv" | "webp" | "mov" | "avi" | "wmv" | "flv" | "m4v"
-                            | "mpeg" | "mpg" | "m2ts" | "mts" | "ogv" | "3gp" | "3g2"
-                            | "asf" | "rm" | "rmvb" | "vob" | "divx" | "f4v" | "mxf"
-                    ))
-                    .unwrap_or(false);
+                    .is_some_and(|ext| plays_as_video(&ext.to_ascii_lowercase()));
                 if is_video {
                     self.stop_video();
                     self.video.set_file(Some(&gtk::gio::File::for_path(path)));
@@ -1269,7 +1394,12 @@ impl PreviewPane {
         let type_description = if is_dir {
             gettext("Folder")
         } else {
-            let (content_type, _) = gio::content_type_guess(Some(p), &[]);
+            // Sniff the content too: with no data GIO reports "Empty document".
+            let mut head = [0u8; 4096];
+            let n = std::fs::File::open(p)
+                .and_then(|mut f| f.read(&mut head))
+                .unwrap_or(0);
+            let (content_type, _) = gio::content_type_guess(Some(p), &head[..n]);
             gio::content_type_get_description(content_type.as_str()).to_string()
         };
 
@@ -1375,12 +1505,16 @@ fn compute_preview(path: &Path) -> PreviewPayload {
         .and_then(|s| s.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
+    // Switched off in Settings → Find → Previews: the file-info card only.
+    if kind_for_ext(&ext).is_some_and(|kind| !kind_enabled(kind)) {
+        return PreviewPayload::Info;
+    }
 
     match ext.as_str() {
         // ── Raster images ──
         "png" | "jpg" | "jpeg" | "jpe" | "webp" | "gif" | "bmp" | "svg" | "svgz" | "ico"
         | "tiff" | "tif" | "jxl" | "ppm" | "pgm" | "pbm" | "pnm" | "xpm" | "tga" => {
-            let Some(img) = image::open(path).ok() else {
+            let Some(img) = crate::imageinfo::open_image(path).ok() else {
                 return PreviewPayload::Info;
             };
             let rgba = img.to_rgba8();
@@ -1573,9 +1707,19 @@ fn compute_preview(path: &Path) -> PreviewPayload {
             }
             PreviewPayload::Info
         }
+        // ── 3D models (STL/OBJ/PLY/OFF/glTF/3MF) and Blender thumbnails ──
+        e if model3d::is_model_ext(e) => match model3d::overview(path, IMAGE_MAX_DIM, IMAGE_MAX_DIM * 3 / 4) {
+            Some((rgba, w, h)) if w > 0 && h > 0 => PreviewPayload::Image {
+                rgba, w, h,
+                total_pages: None, page: None,
+            },
+            _ => PreviewPayload::Info,
+        },
         // ── Archive listing ──
         _ => {
-            if let Some((entries, total)) = archive_listing(path) {
+            if let Some((entries, total)) =
+                kind_enabled(PreviewKind::Archives).then(|| archive_listing(path)).flatten()
+            {
                 let mut listing = format!("{} entries\n\n", total);
                 for e in &entries {
                     listing.push_str(e);
@@ -1590,7 +1734,7 @@ fn compute_preview(path: &Path) -> PreviewPayload {
                 return PreviewPayload::Text { content: listing };
             }
             // ── Audio metadata ──
-            if let Some(audio) = audio_preview(path) {
+            if let Some(audio) = kind_enabled(PreviewKind::Audio).then(|| audio_preview(path)).flatten() {
                 let mut meta = String::new();
                 if let Some(t) = &audio.title {
                     meta.push_str(&format!("Title:  {}\n", t));
@@ -1618,7 +1762,7 @@ fn compute_preview(path: &Path) -> PreviewPayload {
                 return PreviewPayload::Text { content: meta };
             }
             // ── Text preview ──
-            if let Some(tp) = text_preview_for(path) {
+            if let Some(tp) = kind_enabled(PreviewKind::Text).then(|| text_preview_for(path)).flatten() {
                 let display = if tp.truncated {
                     format!(
                         "\u{2026} showing first {} of {} \u{2014}\n\n{}",
@@ -2241,7 +2385,7 @@ fn decode_heif_to_rgba(bytes: &[u8]) -> Result<image::DynamicImage, Box<dyn std:
 /// (e.g. AVIF, HEIF, JXL, QOI, TGA) and convert it to a `gdk::Texture` via
 /// in-memory PNG bytes.  Returns `None` on any failure.
 fn texture_from_image_crate(path: &Path) -> Option<gtk::gdk::Texture> {
-    let img = image::open(path).ok()?;
+    let img = crate::imageinfo::open_image(path).ok()?;
     // Convert to RGBA8 for maximum compatibility.
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
@@ -2744,6 +2888,9 @@ fn info_icon_for(p: &Path) -> &'static str {
             "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "svg" | "tiff" | "tif" | "avif"
             | "heic" | "heif" | "ico",
         ) => "image-x-generic-symbolic",
+        Some("stl" | "obj" | "ply" | "off" | "glb" | "gltf" | "3mf" | "blend" | "blend1") => {
+            "applications-graphics-symbolic"
+        }
         Some("zip" | "tar" | "gz" | "xz" | "bz2" | "7z" | "rar" | "zst") => {
             "package-x-generic-symbolic"
         }
@@ -14467,5 +14614,30 @@ accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>"#;
             prep.pages.len(),
             office_page_caption(doc, 1)
         );
+    }
+}
+
+#[cfg(test)]
+mod preview_kind_tests {
+    use super::*;
+
+    #[test]
+    fn every_previewable_extension_has_one_kind() {
+        assert_eq!(kind_for_ext("heic"), Some(PreviewKind::Images));
+        assert_eq!(kind_for_ext("pdf"), Some(PreviewKind::Pdf));
+        assert_eq!(kind_for_ext("pptx"), Some(PreviewKind::Office));
+        assert_eq!(kind_for_ext("csv"), Some(PreviewKind::Office));
+        assert_eq!(kind_for_ext("stl"), Some(PreviewKind::Models));
+        assert_eq!(kind_for_ext("blend"), Some(PreviewKind::Models));
+        assert_eq!(kind_for_ext("mkv"), Some(PreviewKind::Video));
+        // Animated WebP plays in the video player but follows Images.
+        assert_eq!(kind_for_ext("webp"), Some(PreviewKind::Images));
+        // Recognised by content, not by extension.
+        assert_eq!(kind_for_ext("txt"), None);
+        assert_eq!(kind_for_ext("zip"), None);
+        let mut ids: Vec<_> = PreviewKind::ALL.iter().map(|k| k.id()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), PreviewKind::ALL.len());
     }
 }
