@@ -200,6 +200,28 @@ fn is_sandbox() -> bool {
     std::env::var("FLATPAK_ID").is_ok()
 }
 
+/// Package-manager queries (`dnf check-update`, `repoquery`, `needs-restarting`,
+/// `apt-cache search`, …) each load the whole repository metadata: 200 MB and
+/// more per process. They take turns, so Spotty never holds several at once.
+static HEAVY_QUERY: Mutex<()> = Mutex::new(());
+
+fn heavy_turn() -> std::sync::MutexGuard<'static, ()> {
+    HEAVY_QUERY.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// [`std::process::Command::output`] for one of those heavy queries.
+fn heavy_output(cmd: &mut std::process::Command) -> std::io::Result<std::process::Output> {
+    let _turn = heavy_turn();
+    cmd.output()
+}
+
+/// Give the memory a big background parse freed back to the system.
+fn release_freed_memory() {
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 // Build a Command that runs `prog` on the host (via flatpak-spawn when sandboxed).
 fn host_command(prog: &str) -> std::process::Command {
     if is_sandbox() {
@@ -575,6 +597,7 @@ pub fn ensure_updates_checked_age(max_age: Duration) {
             *update_cache().lock().unwrap() = Some((Instant::now(), updates.clone()));
         }
         *update_fetching().lock().unwrap() = false;
+        release_freed_memory();
         glib::MainContext::default().invoke(move || {
             crate::app::refresh_search_window();
             if !stale {
@@ -807,6 +830,9 @@ fn assemble_updates(
 fn fetch_flatpak_updates() -> Vec<(String, String)> {
     // Include runtimes and extensions as well as apps; runtime-only updates
     // must enable the update action too. Check both installations in parallel.
+    // Only the id column: asking `remote-ls` for names makes it load the
+    // remote's whole AppStream data (~450 MB per process instead of ~40 MB).
+    // The names come from the installed refs instead (`flatpak list`).
     let raws: Vec<String> = std::thread::scope(|s| {
         let handles: Vec<_> = ["--user", "--system"]
             .iter()
@@ -814,12 +840,7 @@ fn fetch_flatpak_updates() -> Vec<(String, String)> {
             .map(|scope| {
                 s.spawn(move || {
                     host_command("flatpak")
-                        .args([
-                            scope,
-                            "remote-ls",
-                            "--updates",
-                            "--columns=application,name",
-                        ])
+                        .args([scope, "remote-ls", "--updates", "--columns=application"])
                         .output()
                         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
                         .unwrap_or_default()
@@ -831,19 +852,35 @@ fn fetch_flatpak_updates() -> Vec<(String, String)> {
             .map(|h| h.join().unwrap_or_default())
             .collect()
     });
-    let mut all = Vec::new();
-    for raw in raws {
-        for line in raw.lines() {
-            let mut p = line.splitn(2, '\t');
-            let app_id = p.next().unwrap_or("").trim().to_string();
-            if app_id.is_empty() || !app_id.contains('.') {
-                continue;
-            }
-            let name = p.next().unwrap_or(&app_id).trim().to_string();
-            all.push((app_id, name));
-        }
+    if raws.iter().all(|raw| raw.trim().is_empty()) {
+        return Vec::new();
     }
-    all
+    let names = host_command("flatpak")
+        .args(["list", "--columns=application,name"])
+        .output()
+        .map(|o| parse_installed_names(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_default();
+    raws.iter().flat_map(|raw| parse_flatpak_update_ids(raw, &names)).collect()
+}
+
+/// `flatpak list --columns=application,name` → id → display name.
+fn parse_installed_names(raw: &str) -> HashMap<String, String> {
+    raw.lines()
+        .filter_map(|line| {
+            let (id, name) = line.split_once('\t')?;
+            let (id, name) = (id.trim(), name.trim());
+            (!id.is_empty() && !name.is_empty()).then(|| (id.to_string(), name.to_string()))
+        })
+        .collect()
+}
+
+/// `remote-ls --updates --columns=application` → (id, name) per update.
+fn parse_flatpak_update_ids(raw: &str, names: &HashMap<String, String>) -> Vec<(String, String)> {
+    raw.lines()
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && id.contains('.'))
+        .map(|id| (id.to_string(), names.get(id).cloned().unwrap_or_else(|| id.to_string())))
+        .collect()
 }
 
 /// Pure parsers: command output → "name  version" lines for the preview.
@@ -898,9 +935,7 @@ fn distro_updates() -> Vec<String> {
     }
     match door {
         // dnf refreshes its own metadata, which PackageKit's cache lags behind.
-        Door::Dnf5Daemon => host_command("dnf")
-            .args(["check-update", "-q"])
-            .output()
+        Door::Dnf5Daemon => heavy_output(host_command("dnf").args(["check-update", "-q"]))
             .map(|o| parse_dnf_updates(&String::from_utf8_lossy(&o.stdout)))
             .unwrap_or_default(),
         Door::PackageKit => crate::packagekit::update_lines(),
@@ -936,6 +971,7 @@ fn ensure_flatpak_catalog() {
         let apps = fetch_flatpak_catalog();
         *flatpak_catalog_cache().lock().unwrap() = Some((Instant::now(), apps));
         *flatpak_catalog_fetching().lock().unwrap() = false;
+        release_freed_memory();
         glib::MainContext::default().invoke(crate::app::refresh_search_window);
     });
 }
@@ -951,24 +987,171 @@ fn is_catalog_app(app_id: &str) -> bool {
 fn fetch_flatpak_catalog() -> Vec<FlatpakApp> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    // Flathub's AppStream file, which Flatpak already keeps up to date, read
+    // as a stream: a few MB, where `flatpak remote-ls` with name columns
+    // loads the same data at ~450 MB per installation.
+    for path in appstream_paths("flathub") {
+        for app in read_appstream(&path) {
+            if is_catalog_app(&app.app_id) && seen.insert(app.app_id.clone()) {
+                out.push(app);
+            }
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    // No AppStream file readable (never refreshed, or hidden from the
+    // sandbox): ask flatpak itself, one installation at a time.
     for scope in ["--user", "--system"] {
-        let raw = host_command("flatpak")
-            .args([
-                scope,
-                "remote-ls",
-                "--cached",
-                "--app",
-                "--columns=application,name,description",
-                "flathub",
-            ])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default();
+        let raw = heavy_output(host_command("flatpak").args([
+            scope,
+            "remote-ls",
+            "--cached",
+            "--app",
+            "--columns=application,name,description",
+            "flathub",
+        ]))
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
         for app in parse_flatpak_apps(&raw) {
             if is_catalog_app(&app.app_id) && seen.insert(app.app_id.clone()) {
                 out.push(app);
             }
         }
+    }
+    out
+}
+
+/// A remote's AppStream file in the user and the system installation
+/// (`appstream.xml`, else the `.gz` Flatpak downloads it as).
+fn appstream_paths(remote: &str) -> Vec<std::path::PathBuf> {
+    let arch = std::env::consts::ARCH;
+    let mut roots = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join(".local/share/flatpak"));
+    }
+    roots.push("/var/lib/flatpak".into());
+    roots
+        .into_iter()
+        .filter_map(|root| {
+            let dir = root.join("appstream").join(remote).join(arch).join("active");
+            ["appstream.xml", "appstream.xml.gz"].iter().map(|f| dir.join(f)).find(|p| p.is_file())
+        })
+        .collect()
+}
+
+fn read_appstream(path: &std::path::Path) -> Vec<FlatpakApp> {
+    let Ok(file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    if path.extension().is_some_and(|e| e == "gz") {
+        parse_appstream(std::io::BufReader::new(flate2::read::MultiGzDecoder::new(file)))
+    } else {
+        parse_appstream(std::io::BufReader::new(file))
+    }
+}
+
+/// Apps (components with an `app/…` Flatpak bundle) from an AppStream
+/// catalog: id, untranslated name and summary. Streamed event by event.
+fn parse_appstream<R: std::io::BufRead>(input: R) -> Vec<FlatpakApp> {
+    use quick_xml::events::Event;
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Field {
+        Name,
+        Summary,
+        Bundle,
+    }
+    let mut reader = quick_xml::Reader::from_reader(input);
+    let mut buf = Vec::new();
+    let mut out = Vec::new();
+    // Element depth; the component's own fields sit right below it.
+    let mut depth = 0usize;
+    let mut component: Option<usize> = None;
+    let mut field: Option<(Field, usize)> = None;
+    let (mut name, mut summary, mut bundle, mut text) =
+        (String::new(), String::new(), String::new(), String::new());
+    loop {
+        let event = match reader.read_event_into(&mut buf) {
+            Ok(Event::Eof) | Err(_) => break,
+            Ok(event) => event,
+        };
+        match event {
+            Event::Start(e) => {
+                depth += 1;
+                let tag = e.local_name();
+                match (tag.as_ref(), component) {
+                    (b"component", None) => {
+                        component = Some(depth);
+                        name.clear();
+                        summary.clear();
+                        bundle.clear();
+                    }
+                    (tag, Some(c)) if depth == c + 1 && field.is_none() => {
+                        let untranslated = e.try_get_attribute("xml:lang").ok().flatten().is_none();
+                        let flatpak = e
+                            .try_get_attribute("type")
+                            .ok()
+                            .flatten()
+                            .is_some_and(|a| a.value.as_ref() == b"flatpak");
+                        field = match tag {
+                            b"name" if untranslated && name.is_empty() => Some((Field::Name, depth)),
+                            b"summary" if untranslated && summary.is_empty() => {
+                                Some((Field::Summary, depth))
+                            }
+                            b"bundle" if flatpak && bundle.is_empty() => Some((Field::Bundle, depth)),
+                            _ => None,
+                        };
+                        text.clear();
+                    }
+                    _ => {}
+                }
+            }
+            Event::Text(t) if field.is_some() => {
+                if let Ok(s) = t.decode() {
+                    text.push_str(&s);
+                }
+            }
+            Event::CData(t) if field.is_some() => {
+                if let Ok(s) = t.decode() {
+                    text.push_str(&s);
+                }
+            }
+            Event::GeneralRef(r) if field.is_some() => {
+                if let Ok(Some(c)) = r.resolve_char_ref() {
+                    text.push(c);
+                } else if let Ok(entity) = r.decode() {
+                    text.push_str(quick_xml::escape::resolve_xml_entity(&entity).unwrap_or(""));
+                }
+            }
+            Event::End(_) => {
+                if let Some((f, d)) = field {
+                    if d == depth {
+                        let value = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        match f {
+                            Field::Name => name = value,
+                            Field::Summary => summary = value,
+                            Field::Bundle => bundle = value,
+                        }
+                        field = None;
+                    }
+                }
+                if component == Some(depth) {
+                    component = None;
+                    // "app/<id>/<arch>/<branch>"; runtimes and add-ons have
+                    // "runtime/…" bundles and are not apps to install.
+                    if let Some(id) = bundle.strip_prefix("app/").and_then(|r| r.split('/').next()) {
+                        if !id.is_empty() {
+                            let label = if name.is_empty() { id.to_string() } else { name.clone() };
+                            out.push(FlatpakApp::new(id.to_string(), label, summary.clone()));
+                        }
+                    }
+                }
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+        buf.clear();
     }
     out
 }
@@ -1015,6 +1198,7 @@ fn ensure_distro_catalog(pm: String) {
         let pkgs = fetch_distro_catalog(&pm);
         *distro_catalog_cache().lock().unwrap() = Some((Instant::now(), pm, Arc::new(pkgs)));
         *distro_catalog_fetching().lock().unwrap() = false;
+        release_freed_memory();
         glib::MainContext::default().invoke(crate::app::refresh_search_window);
     });
 }
@@ -1089,20 +1273,16 @@ fn distro_installed_names() -> std::collections::HashSet<String> {
 // fresh package-manager invocation per keystroke.
 fn fetch_distro_catalog(pm: &str) -> Vec<DistroPackage> {
     let output = match pm {
-        "apt" => host_command("apt-cache").args(["search", "."]).output(),
-        "dnf" => host_command("dnf")
-            .args([
-                "repoquery",
-                "--available",
-                "--cacheonly",
-                "--queryformat",
-                "%{name}\t%{summary}\n",
-            ])
-            .output(),
-        "pacman" => host_command("pacman").args(["-Ss", "."]).output(),
-        "zypper" => host_command("zypper")
-            .args(["--no-refresh", "search"])
-            .output(),
+        "apt" => heavy_output(host_command("apt-cache").args(["search", "."])),
+        "dnf" => heavy_output(host_command("dnf").args([
+            "repoquery",
+            "--available",
+            "--cacheonly",
+            "--queryformat",
+            "%{name}\t%{summary}\n",
+        ])),
+        "pacman" => heavy_output(host_command("pacman").args(["-Ss", "."])),
+        "zypper" => heavy_output(host_command("zypper").args(["--no-refresh", "search"])),
         _ => return vec![],
     };
     let raw = output
@@ -3557,7 +3737,12 @@ pub(crate) const REASON_PK_OFFLINE_STAGED: &str = "packagekit-offline-staged";
 pub(crate) const REASON_OFFLINE_ARMED: &str = "dnf-offline-armed";
 
 fn detect_reboot() -> u8 {
-    let Ok(out) = crate::app::run_host_shell_command(REBOOT_PROBE) else {
+    // The probe may run `needs-restarting`, which loads dnf's metadata.
+    let out = {
+        let _turn = heavy_turn();
+        crate::app::run_host_shell_command(REBOOT_PROBE)
+    };
+    let Ok(out) = out else {
         return REBOOT_NONE;
     };
     // Take the last 0/1 line: a login shell may print profile noise above
@@ -3841,4 +4026,89 @@ pub fn updates_pending() -> bool {
         .ok()
         .map(|g| g.as_ref().is_some_and(|(_, v)| !v.is_empty()))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    #[test]
+    fn appstream_apps_keep_the_untranslated_name_and_summary() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<components version="0.8" origin="flathub">
+  <component type="desktop-application">
+    <id>org.gimp.GIMP</id>
+    <name xml:lang="de">GNU-Bildbearbeitungsprogramm</name>
+    <name>GNU Image Manipulation Program</name>
+    <summary xml:lang="de">Bilder erstellen</summary>
+    <summary>High-end image creation &amp; manipulation</summary>
+    <developer id="org.gimp"><name>The GIMP team</name></developer>
+    <description><p>Not a summary</p></description>
+    <bundle type="flatpak" runtime="org.gnome.Platform/x86_64/48">app/org.gimp.GIMP/x86_64/stable</bundle>
+  </component>
+  <component type="runtime">
+    <id>org.gnome.Platform</id>
+    <name>GNOME Application Platform</name>
+    <bundle type="flatpak">runtime/org.gnome.Platform/x86_64/48</bundle>
+  </component>
+  <component type="console-application">
+    <id>io.example.Tool</id>
+    <summary>A tool &#8211; for terminals</summary>
+    <bundle type="flatpak">app/io.example.Tool/x86_64/stable</bundle>
+  </component>
+</components>"#;
+        let apps = parse_appstream(xml.as_bytes());
+        assert_eq!(apps.len(), 2, "runtimes are not apps");
+        assert_eq!(apps[0].app_id, "org.gimp.GIMP");
+        assert_eq!(apps[0].name, "GNU Image Manipulation Program");
+        assert_eq!(apps[0].description, "High-end image creation & manipulation");
+        // No <name>: the id stands in, as with `remote-ls`.
+        assert_eq!(apps[1].name, "io.example.Tool");
+        assert_eq!(apps[1].description, "A tool \u{2013} for terminals");
+    }
+
+    /// Against this machine's Flathub data:
+    /// `cargo test --bin spotty -- --ignored live_appstream --nocapture`.
+    #[test]
+    #[ignore = "reads the installed Flathub AppStream and runs flatpak"]
+    fn live_appstream_catalog_matches_remote_ls() {
+        let started = Instant::now();
+        let mut from_appstream = std::collections::HashSet::new();
+        for path in appstream_paths("flathub") {
+            from_appstream.extend(read_appstream(&path).into_iter().map(|a| a.app_id));
+        }
+        let elapsed = started.elapsed();
+        let hwm = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        let hwm = hwm.lines().find(|l| l.starts_with("VmHWM")).unwrap_or("").to_string();
+        let raw: String = ["--user", "--system"]
+            .iter()
+            .map(|scope| {
+                host_command("flatpak")
+                    .args([scope, "remote-ls", "--cached", "--app", "--columns=application", "flathub"])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let listed: std::collections::HashSet<String> =
+            raw.lines().map(|l| l.trim().to_string()).filter(|id| is_catalog_app(id)).collect();
+        let missing = listed.difference(&from_appstream).count();
+        println!("appstream {} apps in {elapsed:?} ({hwm}), remote-ls {} apps, {missing} not in appstream",
+            from_appstream.len(), listed.len());
+        assert!(from_appstream.len() * 100 >= listed.len() * 95, "AppStream covers ≥95% of the remote");
+    }
+
+    #[test]
+    fn flatpak_updates_take_their_names_from_the_installed_refs() {
+        let names = parse_installed_names("org.mozilla.firefox\tFirefox\norg.gnome.Platform\tGNOME Application Platform version 50\n");
+        let ups = parse_flatpak_update_ids("org.mozilla.firefox\norg.gnome.Platform\n\nnot-an-id\ncom.example.New\n", &names);
+        assert_eq!(
+            ups,
+            vec![
+                ("org.mozilla.firefox".to_string(), "Firefox".to_string()),
+                ("org.gnome.Platform".to_string(), "GNOME Application Platform version 50".to_string()),
+                ("com.example.New".to_string(), "com.example.New".to_string()),
+            ]
+        );
+    }
 }
