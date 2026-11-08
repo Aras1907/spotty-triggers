@@ -58,6 +58,7 @@ pub const VERB_UPDATE_ALL: &str = "update-all";
 pub const VERB_UPDATE_PKG: &str = "update-pkg";
 pub const VERB_INSTALL: &str = "install";
 pub const VERB_SCHEDULE: &str = "schedule";
+pub const VERB_REMOVE: &str = "remove";
 pub const VERB_ALL: &str = "all";
 
 // PackageKit passes enums as bitfields, one bit per enum *value*
@@ -72,11 +73,13 @@ const FLAG_ONLY_TRUSTED: u64 = bit(1);
 const FLAG_SIMULATE: u64 = bit(2);
 const FLAG_ONLY_DOWNLOAD: u64 = bit(3);
 const FILTER_NONE: u64 = bit(1);
+const FILTER_INSTALLED: u64 = bit(2);
 const FILTER_NOT_INSTALLED: u64 = bit(3);
 const FILTER_NEWEST: u64 = bit(16);
 const FILTER_ARCH: u64 = bit(18);
 
 // `PkInfoEnum` — only the ones read below.
+const INFO_INSTALLED: u32 = 1;
 const INFO_AVAILABLE: u32 = 2;
 const INFO_LOW: u32 = 3;
 const INFO_SECURITY: u32 = 8;
@@ -199,8 +202,8 @@ impl From<Failure> for String {
 /// What a transaction reported by the time it ended.
 #[derive(Default, Debug)]
 struct Txn {
-    /// `Package` signals: (info, package_id).
-    packages: Vec<(u32, String)>,
+    /// `Package` signals: (info, package_id, summary).
+    packages: Vec<(u32, String, String)>,
     error: Option<(u32, String)>,
     exit: Option<u32>,
     percentage: u32,
@@ -314,8 +317,8 @@ fn run_transaction(
                 let mut s = state.borrow_mut();
                 match member {
                     "Package" => {
-                        if let Some((info, id, _summary)) = params.get::<(u32, String, String)>() {
-                            s.packages.push((info, id));
+                        if let Some((info, id, summary)) = params.get::<(u32, String, String)>() {
+                            s.packages.push((info, id, summary));
                         }
                     }
                     "ErrorCode" => {
@@ -505,9 +508,9 @@ pub fn get_updates() -> Result<Vec<Update>, Failure> {
         .packages
         .iter()
         // BLOCKED (held-back) updates can't be applied, so aren't offered.
-        .filter(|(info, _)| (INFO_LOW..=INFO_SECURITY).contains(info))
-        .filter(|(_, id)| seen.insert(id.clone()))
-        .filter_map(|(_, id)| Update::from_id(id))
+        .filter(|(info, _, _)| (INFO_LOW..=INFO_SECURITY).contains(info))
+        .filter(|(_, id, _)| seen.insert(id.clone()))
+        .filter_map(|(_, id, _)| Update::from_id(id))
         .collect())
 }
 
@@ -525,6 +528,94 @@ pub fn update_lines() -> Vec<String> {
     }
 }
 
+/// Package names and summaries — the installed ones, or the newest
+/// installable ones. Works on every backend (apt, dnf, zypp, alpm, apk,
+/// portage, eopkg, …), so distros without a command-line parser get a catalog.
+pub fn list(installed: bool) -> Vec<(String, String)> {
+    let filter = if installed {
+        FILTER_INSTALLED | FILTER_ARCH
+    } else {
+        FILTER_NOT_INSTALLED | FILTER_NEWEST | FILTER_ARCH
+    };
+    let Ok(txn) = transact("GetPackages", tuple([filter.to_variant()]), false, None) else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    txn.packages
+        .into_iter()
+        .filter_map(|(_, id, summary)| {
+            let name = package_name(&id)?;
+            seen.insert(name.clone()).then_some((name, summary))
+        })
+        .collect()
+}
+
+/// The installed package that owns `path` (any backend).
+pub fn owner_of(path: &str) -> Option<String> {
+    let files: Vec<String> = vec![path.to_string()];
+    let txn = transact(
+        "SearchFiles",
+        tuple([FILTER_INSTALLED.to_variant(), files.to_variant()]),
+        false,
+        None,
+    )
+    .ok()?;
+    txn.packages.into_iter().find_map(|(_, id, _)| package_name(&id))
+}
+
+/// "name;version;arch;data" → "name".
+fn package_name(id: &str) -> Option<String> {
+    id.split(';').next().filter(|n| !n.is_empty()).map(str::to_owned)
+}
+
+/// The command-line tool behind a PackageKit backend, as the source label
+/// ("apk" on Alpine and postmarketOS).
+pub fn tool_name(backend: &str) -> String {
+    match backend {
+        "aptcc" | "apt" => "apt",
+        "dnf" | "dnf5" | "yum" => "dnf",
+        "zypp" => "zypper",
+        "alpm" => "pacman",
+        "portage" => "emerge",
+        "eopkg" | "pisi" => "eopkg",
+        "slack" => "slackpkg",
+        "entropy" => "equo",
+        other => other,
+    }
+    .to_string()
+}
+
+/// Remove one installed package by name. Dependent packages make it fail
+/// rather than go with it.
+fn remove(name: &str, task: &TaskHandle) -> Result<(), Failure> {
+    task.status("Looking for the package");
+    let names: Vec<String> = vec![name.to_string()];
+    let txn = transact(
+        "Resolve",
+        tuple([FILTER_INSTALLED.to_variant(), names.to_variant()]),
+        false,
+        None,
+    )?;
+    let id = txn
+        .packages
+        .into_iter()
+        .find(|(info, _, _)| *info == INFO_INSTALLED)
+        .map(|(_, id, _)| id)
+        .ok_or_else(|| Failure::plain(format!("{name} isn't installed")))?;
+    if task.cancelled() {
+        return Err(Failure::plain("Cancelled"));
+    }
+    let ids: Vec<String> = vec![id];
+    transact(
+        "RemovePackages",
+        tuple([FLAG_ONLY_TRUSTED.to_variant(), ids.to_variant(), false.to_variant(), false.to_variant()]),
+        true,
+        Some(task),
+    )?;
+    task.status("Uninstalled");
+    Ok(())
+}
+
 /// The newest installable package id for `name`, if the sources have one.
 fn resolve_installable(name: &str) -> Result<Option<String>, Failure> {
     let filter = FILTER_NOT_INSTALLED | FILTER_NEWEST | FILTER_ARCH;
@@ -538,8 +629,8 @@ fn resolve_installable(name: &str) -> Result<Option<String>, Failure> {
     Ok(txn
         .packages
         .into_iter()
-        .find(|(info, _)| *info == INFO_AVAILABLE)
-        .map(|(_, id)| id))
+        .find(|(info, _, _)| *info == INFO_AVAILABLE)
+        .map(|(_, id, _)| id))
 }
 
 /// True when an update is downloaded and armed for the next restart.
@@ -668,6 +759,7 @@ pub fn run_task(args: &[String], task: &TaskHandle) -> Result<(), String> {
         VERB_UPDATE_ALL => update_system(None, task).map_err(Into::into),
         VERB_UPDATE_PKG => update_system(spec, task).map_err(Into::into),
         VERB_INSTALL => install(spec.unwrap_or_default(), task).map_err(Into::into),
+        VERB_REMOVE => remove(spec.unwrap_or_default(), task).map_err(Into::into),
         VERB_SCHEDULE => {
             task.status("Scheduling updates for the next restart");
             trigger_offline().map_err(Into::into)
@@ -700,6 +792,10 @@ pub fn install_args(name: &str) -> Vec<String> {
     vec![ARGV0.into(), VERB_INSTALL.into(), name.into()]
 }
 
+pub fn remove_args(name: &str) -> Vec<String> {
+    vec![ARGV0.into(), VERB_REMOVE.into(), name.into()]
+}
+
 /// Arm an already-downloaded update.
 pub fn schedule_args() -> Vec<String> {
     vec![ARGV0.into(), VERB_SCHEDULE.into()]
@@ -729,6 +825,17 @@ pub fn is_schedule_task(args: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backends_name_their_tools() {
+        assert_eq!(tool_name("aptcc"), "apt");
+        assert_eq!(tool_name("alpm"), "pacman");
+        assert_eq!(tool_name("apk"), "apk");
+        assert_eq!(tool_name("portage"), "emerge");
+        assert_eq!(package_name("apk-tools;2.14-r0;aarch64;main").as_deref(), Some("apk-tools"));
+        assert_eq!(package_name(";1;x;y"), None);
+        assert_eq!(remove_args("vim"), vec![ARGV0, VERB_REMOVE, "vim"]);
+    }
 
     #[test]
     fn package_ids_become_update_lines() {

@@ -258,11 +258,15 @@ fn flatpak_cmd_args(subargs: &[&str]) -> Vec<String> {
 /// system packages are off: an unsupported distro or an image-based one.
 fn get_detected_pm() -> Option<String> {
     let d = crate::distro::current();
-    if d.supports_system_packages() {
-        d.package_manager().map(str::to_string)
-    } else {
-        None
+    if d.immutable {
+        return None;
     }
+    if let Some(pm) = d.package_manager() {
+        return Some(pm.to_string());
+    }
+    // Any other distro (Alpine/postmarketOS, Gentoo, Solus, …): whatever
+    // PackageKit runs on there.
+    crate::packagekit::backend_name().map(|b| crate::packagekit::tool_name(&b))
 }
 
 /// What a distro-package source has to work with on this system.
@@ -286,10 +290,9 @@ pub(crate) fn system_packages() -> SystemPackages {
     if d.immutable {
         return SystemPackages::Immutable { distro };
     }
-    let Some(pm) = d.package_manager() else {
+    let Some(pm) = get_detected_pm() else {
         return SystemPackages::Unsupported { distro };
     };
-    let pm = pm.to_string();
     if crate::packagekit::available() {
         let via = match crate::packagekit::backend_name() {
             Some(b) => format!("PackageKit · {b}"),
@@ -316,7 +319,7 @@ enum Door {
 /// aren't offered at all — never a fallback that asks for a root password.
 fn system_door() -> Option<Door> {
     let d = crate::distro::current();
-    if !d.supports_system_packages() {
+    if get_detected_pm().is_none() {
         return None;
     }
     if d.family == crate::distro::Family::Fedora && crate::dnf5daemon::available() {
@@ -686,6 +689,7 @@ fn update_cmd_args(source: &str, app_id: Option<&str>) -> Vec<String> {
                 chained_script(&parts)
             }
         }
+        s if get_detected_pm().as_deref() == Some(s) => distro_update_args(None),
         _ => no_updates_cmd(),
     }
 }
@@ -1283,7 +1287,7 @@ fn fetch_distro_catalog(pm: &str) -> Vec<DistroPackage> {
         ])),
         "pacman" => heavy_output(host_command("pacman").args(["-Ss", "."])),
         "zypper" => heavy_output(host_command("zypper").args(["--no-refresh", "search"])),
-        _ => return vec![],
+        _ => return pk_packages(false),
     };
     let raw = output
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
@@ -1292,6 +1296,15 @@ fn fetch_distro_catalog(pm: &str) -> Vec<DistroPackage> {
     let mut seen = std::collections::HashSet::new();
     pkgs.retain(|p| seen.insert(p.name_lc.clone()));
     pkgs
+}
+
+/// The catalog (or installed list) from PackageKit, for package managers
+/// without a command-line parser above.
+fn pk_packages(installed: bool) -> Vec<DistroPackage> {
+    crate::packagekit::list(installed)
+        .into_iter()
+        .map(|(name, summary)| DistroPackage::new(name, summary))
+        .collect()
 }
 
 fn parse_distro_search(pm: &str, raw: &str) -> Vec<DistroPackage> {
@@ -1401,7 +1414,7 @@ fn fetch_distro_installed(pm: &str) -> Vec<DistroPackage> {
         "zypper" => host_command("zypper")
             .args(["packages", "--installed-only"])
             .output(),
-        _ => return vec![],
+        _ => return pk_packages(true),
     };
     let raw = output
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())

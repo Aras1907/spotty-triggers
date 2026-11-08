@@ -621,7 +621,18 @@ static BT_TASK: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static BT_RESULT: std::sync::Mutex<Option<(String, bool)>> = std::sync::Mutex::new(None);
 
 /// Single source of truth for the shell command per BT action.
+/// A BlueZ address ("AA:BB:CC:DD:EE:FF"). Addresses come from parsed
+/// bluetoothctl output, where a crafted device name could forge a line, and
+/// they go into a host shell command: anything else is refused.
+fn is_mac(s: &str) -> bool {
+    s.len() == 17
+        && s.bytes().enumerate().all(|(i, b)| if i % 3 == 2 { b == b':' } else { b.is_ascii_hexdigit() })
+}
+
 fn bt_command(op: &str, mac: &str) -> Option<String> {
+    if !matches!(op, "power_on" | "power_off") && !is_mac(mac) {
+        return None;
+    }
     match op {
         "power_on" => Some(POWER_ON.to_string()),
         "power_off" => Some("bluetoothctl power off".to_string()),
@@ -1237,6 +1248,17 @@ mod tests {
     fn bt_command_disconnect_no_rfkill() {
         let cmd = bt_command("disconnect", "AA:BB:CC:DD:EE:FF").unwrap();
         assert!(!cmd.contains("rfkill"));
+    }
+
+    #[test]
+    fn bt_command_refuses_anything_but_an_address() {
+        assert!(bt_command("connect", "AA:BB:CC:DD:EE:FF").is_some());
+        assert!(bt_command("connect", "aa:bb:cc:dd:ee:0f").is_some());
+        assert!(bt_command("connect", "AA:BB:CC:DD:EE:F;").is_none());
+        assert!(bt_command("pair", "$(reboot)").is_none());
+        assert!(bt_command("disconnect", "AA:BB:CC:DD:EE:FF;rm").is_none());
+        assert!(bt_command("connect", "").is_none());
+        assert!(bt_command("power_off", "").is_some());
     }
 
     #[test]

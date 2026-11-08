@@ -1,8 +1,8 @@
 // Work out how to uninstall an installed application from its `.desktop` file.
 //
-// Flatpak apps are removed via `flatpak uninstall`; distro apps are removed via
-// the package that owns the `.desktop` file (looked up with rpm/dpkg/pacman)
-// run through `pkexec`. Returns a ready-to-run plan for `operations::start`.
+// Flatpak apps are removed via `flatpak uninstall`; distro apps by removing
+// the package that owns the `.desktop` file through PackageKit (owner found
+// by PackageKit, rpm, dpkg or pacman). Returns a plan for `operations::start`.
 
 use std::path::Path;
 
@@ -133,8 +133,17 @@ pub fn plan_for_app(desktop: &Path, name: &str, icon: &str) -> Option<Plan> {
         }
     }
 
-    // Distro: find the package that owns the .desktop file.
+    // Distro: find the package that owns the .desktop file — PackageKit
+    // knows on every distro; the package tools are the fallback.
     let path = desktop.to_string_lossy().to_string();
+    if crate::packagekit::available() {
+        if let Some(pkg) = crate::packagekit::owner_of(&path) {
+            let pm = crate::packagekit::backend_name()
+                .map(|b| crate::packagekit::tool_name(&b))
+                .unwrap_or_else(|| "PackageKit".into());
+            return Some(distro_plan(&pm, &pkg, name, icon));
+        }
+    }
     if let Some(out) = host_output("rpm", &["-qf", "--queryformat", "%{NAME}", &path]) {
         let pkg = out.trim();
         if !pkg.is_empty() && !pkg.contains("not owned") {
@@ -269,21 +278,10 @@ pub fn kill_plan_for_app(desktop: &Path, name: &str, icon: &str) -> Plan {
     }
 }
 
+/// Removal goes through PackageKit (polkit-gated D-Bus) on every distro —
+/// never a pkexec password prompt for a root shell command.
 fn distro_plan(pm: &str, pkg: &str, name: &str, icon: &str) -> Plan {
-    let inner: Vec<String> = match pm {
-        "dnf" => vec!["dnf".into(), "remove".into(), "-y".into(), pkg.into()],
-        "apt" => vec!["apt-get".into(), "remove".into(), "-y".into(), pkg.into()],
-        "pacman" => vec![
-            "pacman".into(),
-            "-R".into(),
-            "--noconfirm".into(),
-            pkg.into(),
-        ],
-        _ => vec![pm.into()],
-    };
-    let mut args = host_prefix();
-    args.push("pkexec".into());
-    args.extend(inner);
+    let args = crate::packagekit::remove_args(pkg);
     Plan {
         title: format!("Uninstalling {name}"),
         source: pm.to_string(),
