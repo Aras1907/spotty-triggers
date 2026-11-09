@@ -82,6 +82,9 @@ pub fn human_size(bytes: u64) -> String {
 
 pub fn aspect_ratio(w: u32, h: u32) -> String {
     let g = gcd(w, h);
+    if g == 0 {
+        return "0:0".into(); // zero-sized image: avoid dividing by zero
+    }
     let rw = w / g;
     let rh = h / g;
     format!("{}:{}", rw, rh)

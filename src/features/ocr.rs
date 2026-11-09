@@ -411,6 +411,12 @@ fn ocr_luma_with_psm(image: &image::GrayImage, psm: i32) -> Option<(String, i32)
 
 fn ocr_file(path: &Path) -> Option<(String, i32)> {
     log::info!("ocr: processing {}", path.display());
+    // Background indexing OCRs every image it finds: a multi-GB "image" must
+    // not be read into memory. Real screenshots and photos are far smaller.
+    if std::fs::metadata(path).ok()?.len() > 64 * 1024 * 1024 {
+        log::info!("ocr: skipping {} (over 64 MiB)", path.display());
+        return None;
+    }
     let bytes = std::fs::read(path).ok()?;
     let image = decode_image(&bytes, path)?;
     log::info!("ocr: decoded {} {}x{}", path.display(), image.width(), image.height());
@@ -452,6 +458,10 @@ fn decode_heif(bytes: &[u8]) -> Option<image::DynamicImage> {
     let libheif = LibHeif::new();
     let ctx = HeifContext::read_from_bytes(bytes).ok()?;
     let handle = ctx.primary_image_handle().ok()?;
+    // A tiny file can declare a huge canvas; refuse before allocating it.
+    if u64::from(handle.width()) * u64::from(handle.height()) > 100_000_000 {
+        return None;
+    }
     let decoded = libheif.decode(&handle, ColorSpace::Rgb(RgbChroma::Rgba), None).ok()?;
     let planes = decoded.planes();
     let interleaved = planes.interleaved?;

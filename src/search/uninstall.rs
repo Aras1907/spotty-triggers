@@ -55,6 +55,15 @@ fn flatpak_app_id(desktop: &Path) -> Option<String> {
     None
 }
 
+/// Snap names are lowercase alphanumerics, `-` and `_` (instances add `_key`),
+/// never starting with `-`: the name goes to `pkexec snap remove` as an
+/// argument, so anything option-shaped must not get through.
+fn valid_snap_name(s: &str) -> bool {
+    s.len() <= 80
+        && s.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
+        && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
 /// The snap to remove for a snapd desktop entry: `X-SnapInstanceName`
 /// when written, else the filename's first `_` component ("<snap>_<app>"
 /// — only a best effort, instance installs contain `_` themselves).
@@ -65,7 +74,7 @@ fn snap_instance_name(desktop: &Path) -> Option<String> {
                 if k.trim() == "X-SnapInstanceName" {
                     let v = v.trim();
                     if !v.is_empty() {
-                        return Some(v.to_string());
+                        return Some(v.to_string()).filter(|s| valid_snap_name(s));
                     }
                 }
             }
@@ -74,8 +83,23 @@ fn snap_instance_name(desktop: &Path) -> Option<String> {
     let stem = desktop.file_stem()?.to_str()?;
     stem.split('_')
         .next()
-        .filter(|s| !s.is_empty())
+        .filter(|s| valid_snap_name(s))
         .map(str::to_string)
+}
+
+#[cfg(test)]
+mod snap_name_tests {
+    use super::valid_snap_name;
+
+    #[test]
+    fn rejects_option_shaped_and_odd_names() {
+        for ok in ["code", "firefox", "core22", "my-app_1"] {
+            assert!(valid_snap_name(ok), "{ok}");
+        }
+        for bad in ["", "-x", "--purge", "a b", "a;b", "A", "a/b"] {
+            assert!(!valid_snap_name(bad), "{bad}");
+        }
+    }
 }
 
 pub fn plan_for_app(desktop: &Path, name: &str, icon: &str) -> Option<Plan> {
@@ -87,6 +111,7 @@ pub fn plan_for_app(desktop: &Path, name: &str, icon: &str) -> Option<Plan> {
             "uninstall".into(),
             "--assumeyes".into(),
             "--noninteractive".into(),
+            "--".into(), // the id comes from a file name: never let it read as an option
             app_id,
         ]);
         return Some(Plan {

@@ -29,6 +29,8 @@ const MAX_PDF_STREAM_BYTES: usize = 2_000_000;
 const MAX_PDF_TOTAL_STREAM_BYTES: usize = 20_000_000;
 const MAX_TEXT_FILE_BYTES: u64 = 1_500_000;
 const MAX_ZIP_ENTRY_BYTES: usize = 5_000_000;
+/// Total XML one Office file may decompress (many slides/sheets of 5 MB each).
+const MAX_ZIP_TOTAL_BYTES: usize = 20_000_000;
 const MAX_BINARY_BYTES: u64 = 2_000_000;
 
 pub fn search_find(query: &str, snapshot: &Arc<RwLock<crate::index::Snapshot>>) -> Vec<SearchResult> {
@@ -1646,8 +1648,11 @@ fn extract_ooxml_text(path: &Path, ext: &str) -> Option<String> {
                 .filter(|n| n.starts_with("ppt/slides/slide") && n.ends_with(".xml"))
                 .collect();
             slides.sort();
+            let mut budget = MAX_ZIP_TOTAL_BYTES;
             for name in slides {
                 if let Some(xml) = read_zip_entry(&mut zip, &name) {
+                    let Some(left) = budget.checked_sub(xml.len()) else { break };
+                    budget = left;
                     parts.extend(extract_xml_text_runs(&xml, "a:t"));
                 }
             }
@@ -1661,8 +1666,11 @@ fn extract_ooxml_text(path: &Path, ext: &str) -> Option<String> {
                 .filter(|n| n.starts_with("xl/worksheets/sheet") && n.ends_with(".xml"))
                 .collect();
             sheets.sort();
+            let mut budget = MAX_ZIP_TOTAL_BYTES;
             for name in sheets {
                 if let Some(xml) = read_zip_entry(&mut zip, &name) {
+                    let Some(left) = budget.checked_sub(xml.len()) else { break };
+                    budget = left;
                     parts.extend(extract_sheet_text(&xml, &shared));
                 }
             }

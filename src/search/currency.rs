@@ -255,10 +255,8 @@ fn load_disk(max_age: Duration) -> Option<Rates> {
 
 fn save_disk(text: &str) {
     if let Some(path) = cache_path() {
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(path, text);
+        // write_private: 0700 dir, 0600 file, atomic rename (never writes through a symlink).
+        let _ = crate::security::write_private(path, text);
     }
 }
 
@@ -284,10 +282,7 @@ fn load_names(max_age: Duration) -> Option<HashMap<String, String>> {
 
 fn save_names(text: &str) {
     if let Some(path) = names_path() {
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(path, text);
+        let _ = crate::security::write_private(path, text);
     }
 }
 

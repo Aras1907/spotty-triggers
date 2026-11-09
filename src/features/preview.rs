@@ -2347,6 +2347,9 @@ fn avif_to_png_file(path: &Path) -> Option<PathBuf> {
     let parent = out.parent()?;
     let _ = crate::security::private_dir(parent);
 
+    if std::fs::metadata(path).ok()?.len() > 64 * 1024 * 1024 {
+        return None;
+    }
     let bytes = std::fs::read(path).ok()?;
     let rgba = decode_heif_to_rgba(&bytes).ok()?;
     rgba.save_with_format(&out, image::ImageFormat::Png).ok()?;
@@ -2360,6 +2363,10 @@ fn decode_heif_to_rgba(bytes: &[u8]) -> Result<image::DynamicImage, Box<dyn std:
     let libheif = LibHeif::new();
     let ctx = HeifContext::read_from_bytes(bytes)?;
     let handle = ctx.primary_image_handle()?;
+    // A tiny file can declare a huge canvas; refuse before allocating it.
+    if u64::from(handle.width()) * u64::from(handle.height()) > 100_000_000 {
+        return Err("image too large".into());
+    }
     let image = libheif.decode(&handle, ColorSpace::Rgb(RgbChroma::Rgba), None)?;
     let planes = image.planes();
     let interleaved = planes.interleaved.ok_or("no interleaved plane")?;
@@ -3066,7 +3073,11 @@ fn extract_office_content(doc: &Path) -> Option<OfficeContent> {
 }
 
 fn extract_csv(doc: &Path) -> Option<OfficeContent> {
-    let text = std::fs::read_to_string(doc).ok()?;
+    // Only the first few rows are shown, so a 1 MiB prefix is plenty; reading
+    // the whole file would let a huge download exhaust memory on hover.
+    let mut bytes = Vec::new();
+    std::fs::File::open(doc).ok()?.take(1024 * 1024).read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
     let delimiter = detect_csv_delimiter(&text);
     let mut rows = parse_delimited_rows(&text, delimiter, OFFICE_MAX_ROWS);
     rows.retain(|row| row.iter().any(|cell| !cell.trim().is_empty()));
@@ -4717,10 +4728,14 @@ fn read_zip_text<R: std::io::Read + std::io::Seek>(
     name: &str,
 ) -> Option<String> {
     use std::io::Read;
-    let mut entry = zip.by_name(name).ok()?;
+    const MAX: u64 = 8 * 1024 * 1024; // same cap as the thumbnail reader; stops zip bombs
+    let entry = zip.by_name(name).ok()?;
+    if entry.size() > MAX {
+        return None;
+    }
     let mut buf = String::new();
-    entry.read_to_string(&mut buf).ok()?;
-    Some(buf)
+    entry.take(MAX + 1).read_to_string(&mut buf).ok()?;
+    (buf.len() as u64 <= MAX).then_some(buf)
 }
 
 /// Extract all text inside <a:t>...</a:t> runs (used by PPTX/DOCX share the w:t
