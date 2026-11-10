@@ -834,6 +834,49 @@ fn open_updates_dialog(parent: &adw::PreferencesWindow, config: &Rc<RefCell<Conf
     g.set_sensitive(enabled);
     page.add(&g);
 
+    // What the single "Update" action covers. A source this machine
+    // doesn't have (per the cached probes) is left out.
+    {
+        let sources = adw::PreferencesGroup::builder()
+            .title(gettext("Update Sources"))
+            .description(gettext("What Update installs. Spotty updates every source switched on here in one run."))
+            .build();
+        let rows: [(String, String, &str, bool, fn(&Config) -> bool, fn(&mut Config, bool)); 4] = [
+            (gettext("Flatpak"), gettext("Apps and runtimes from Flathub and other remotes"), "system-software-install-symbolic",
+                crate::search::cmd::flatpak_is_available() != Some(false),
+                |c| c.update_flatpak, |c, v| c.update_flatpak = v),
+            (gettext("System packages"), gettext("Your distribution's packages, through its update service"), "package-x-generic-symbolic",
+                true,
+                |c| c.update_distro, |c, v| c.update_distro = v),
+            (gettext("Snap"), gettext("Snap packages"), "application-x-addon-symbolic",
+                crate::search::cmd::snap_is_available() != Some(false),
+                |c| c.update_snap, |c, v| c.update_snap = v),
+            (gettext("AppImages"), gettext("AppImages that carry update information"), "application-x-executable-symbolic",
+                true,
+                |c| c.update_appimage, |c, v| c.update_appimage = v),
+        ];
+        for (title, subtitle, icon, available, get, set) in rows {
+            if !available {
+                continue;
+            }
+            let row = adw::SwitchRow::builder()
+                .title(title)
+                .subtitle(subtitle)
+                .active(get(&config.borrow()))
+                .use_markup(false)
+                .build();
+            row.add_prefix(&gtk::Image::from_icon_name(icon));
+            let cfg = config.clone();
+            row.connect_active_notify(move |r| {
+                let on = r.is_active();
+                save_and_refresh(&cfg, |c| set(c, on));
+            });
+            sources.add(&row);
+        }
+        sources.set_sensitive(enabled);
+        page.add(&sources);
+    }
+
     if crate::search::cmd::updates_pending() {
         let g2 = adw::PreferencesGroup::builder().build();
         let row = adw::ActionRow::builder()

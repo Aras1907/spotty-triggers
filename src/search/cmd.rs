@@ -664,33 +664,42 @@ fn update_cmd_args(source: &str, app_id: Option<&str>) -> Vec<String> {
                 chained_script(&parts)
             }
         }
-        "all" => {
-            // Query installed sources when the operation runs. The preview
-            // cache may be old or incomplete and must not limit an all update.
-            let mut parts: Vec<(&str, String)> = vec![
-                ("flatpak", "if command -v flatpak >/dev/null 2>&1; then flatpak update --assumeyes; fi".into()),
-                ("snap", "if command -v snap >/dev/null 2>&1; then pkexec snap refresh; fi".into()),
-            ];
-            // AppImages recheck each discovered file at execution time too.
-            for cmd in crate::search::appimage::all_update_shell_cmds() {
-                parts.push(("appimage", cmd));
-            }
-            // The daemon half runs first (it installs at the next restart,
-            // the rest install immediately), so the chain follows it as the
-            // task's script argument.
-            let door = system_door();
-            if let Some(door) = door {
-                let script = chained_script_text(&parts);
-                match door {
-                    Door::Dnf5Daemon => crate::dnf5daemon::all_args(&script),
-                    Door::PackageKit => crate::packagekit::all_args(&script),
-                }
-            } else {
-                chained_script(&parts)
-            }
-        }
+        "all" => update_all_args(AppSources::new(true, true, true, true)),
         s if get_detected_pm().as_deref() == Some(s) => distro_update_args(None),
         _ => no_updates_cmd(),
+    }
+}
+
+/// The "Update" run over the sources the user chose in Settings.
+fn update_all_args(src: AppSources) -> Vec<String> {
+    // Query installed sources when the operation runs. The preview
+    // cache may be old or incomplete and must not limit an all update.
+    let mut parts: Vec<(&str, String)> = Vec::new();
+    if src.flatpak {
+        parts.push(("flatpak", "if command -v flatpak >/dev/null 2>&1; then flatpak update --assumeyes; fi".into()));
+    }
+    if src.snap {
+        parts.push(("snap", "if command -v snap >/dev/null 2>&1; then pkexec snap refresh; fi".into()));
+    }
+    // AppImages recheck each discovered file at execution time too.
+    if src.appimage {
+        for cmd in crate::search::appimage::all_update_shell_cmds() {
+            parts.push(("appimage", cmd));
+        }
+    }
+    // The daemon half runs first (it installs at the next restart,
+    // the rest install immediately), so the chain follows it as the
+    // task's script argument.
+    match system_door().filter(|_| src.distro) {
+        Some(door) => {
+            let script = chained_script_text(&parts);
+            match door {
+                Door::Dnf5Daemon => crate::dnf5daemon::all_args(&script),
+                Door::PackageKit => crate::packagekit::all_args(&script),
+            }
+        }
+        None if parts.is_empty() => no_updates_cmd(),
+        None => chained_script(&parts),
     }
 }
 
@@ -1888,7 +1897,7 @@ pub fn update_results(query: &str, config: &Config) -> Vec<SearchResult> {
     search_updates(query, config)
 }
 
-fn search_updates(query: &str, config: &Config) -> Vec<SearchResult> {
+fn search_updates(_query: &str, config: &Config) -> Vec<SearchResult> {
     // Master switch off: the verb only offers to turn the feature back on
     // (the badge and the background checks are gated elsewhere).
     if !config.result_enabled("updates") {
@@ -1904,13 +1913,11 @@ fn search_updates(query: &str, config: &Config) -> Vec<SearchResult> {
         .and_then(|g| g.clone())
         .map(|(_, v)| v);
     let mut out: Vec<SearchResult> = Vec::new();
-    let rest = query.trim();
     // The restart row sits on top whenever the probe confirms a reboot is
     // pending — including right after a finished update asked for one. It is
-    // never offered just because updates exist: those are installed first (see
-    // the scope/package rows below), and only a finished run can put the
-    // machine in the state that needs a restart. Targeted subqueries
-    // ("update firefox") keep their own rows first.
+    // never offered just because updates exist: those are installed first
+    // (the Update row below), and only a finished run can put the machine in
+    // the state that needs a restart.
     if reboot_pending() {
         out.push(restart_required_row());
     }
@@ -1919,7 +1926,6 @@ fn search_updates(query: &str, config: &Config) -> Vec<SearchResult> {
     if offline_update_staged() && system_door().is_some() {
         out.push(staged_update_now_row());
     }
-    let rl = rest.to_lowercase();
     if *update_fetching().lock().unwrap() || updates.is_none() {
         out.push(check_now_row(
             gettext("Checking for updates…"),
@@ -1927,75 +1933,23 @@ fn search_updates(query: &str, config: &Config) -> Vec<SearchResult> {
             "emblem-synchronizing-symbolic",
         ));
     } else {
-        {
-            let list: &[UpdateInfo] = updates.as_deref().unwrap_or_default();
-            // 1. The scoped targets — the obvious things to type after
-            //    "update " ("update all", "update flatpak", "update system
-            //    packages", "update snap") — always offered, so they read
-            //    as recommendations even with nothing pending (idle rows
-            //    re-check on Enter instead of firing an empty run).
-            let scopes = scopes_from(list);
-            let mut matched = false;
-            let mut flatpak_scope = false;
-            let mut distro_scope = false;
-            let mut snap_scope = false;
-            let mut appimage_scope = false;
-            for sc in &scopes {
-                // Once a restart is pending, a second "all" update is not
-                // actionable. Keep the restart notice (or staged Update now)
-                // as the path forward.
-                if sc.key == "all" && reboot_pending() {
-                    continue;
-                }
-                if rest.is_empty() || sc.matches(&rl) {
-                    out.push(sc.row());
-                    matched = true;
-                    match sc.key {
-                        "flatpak" => flatpak_scope = true,
-                        "distro" => distro_scope = true,
-                        "snap" => snap_scope = true,
-                        "appimage" => appimage_scope = true,
-                        _ => {} // "all" already covers every source
-                    }
-                }
+        // One "Update" row over the sources chosen in Settings: it updates
+        // everything there is, whatever was typed after the verb.
+        let src = config.update_sources();
+        let list: Vec<UpdateInfo> = updates
+            .iter()
+            .flatten()
+            .filter(|u| src.includes(&u.source))
+            .cloned()
+            .collect();
+        // Once a restart is pending, a second update is not actionable: the
+        // restart notice (or staged Update now) is the path forward.
+        if !reboot_pending() {
+            let mut row = scopes_from(&list).swap_remove(0).row();
+            if let Action::StartOperation { args, .. } = &mut row.action {
+                *args = update_all_args(src);
             }
-            // 2. One row per pending package ("update firefox"). Picking a
-            //    source scope also lists its packages, so a single one can
-            //    still be chosen ("update flatpak" -> Firefox…).
-            let in_scope = |u: &UpdateInfo| match u.source.as_str() {
-                "flatpak" => flatpak_scope,
-                "snap" => snap_scope,
-                "appimage" => appimage_scope,
-                _ => distro_scope,
-            };
-            let mut n = 0;
-            for u in list {
-                if n >= 10 {
-                    break;
-                }
-                if rest.is_empty()
-                    || in_scope(u)
-                    || u.name.to_lowercase().contains(&rl)
-                    || package_display(u).to_lowercase().contains(&rl)
-                    || crate::search::fuzzy_match(&rl, &package_display(u))
-                {
-                    out.push(package_row(u));
-                    n += 1;
-                    matched = true;
-                }
-            }
-            if !matched {
-                out.push(SearchResult {
-                    kind: ResultKind::System,
-                    title: gettext("No matching updates").into(),
-                    subtitle: Some(
-                        gettext("Type all, flatpak, distro or a package name").into(),
-                    ),
-                    icon: Some("edit-find-symbolic".into()),
-                    action: Action::Noop,
-                    score: 1000,
-                });
-            }
+            out.push(row);
         }
     }
     // Always offer the switch, from search as well as from Settings.
@@ -2561,6 +2515,20 @@ fn snap_install_result(pkg: DistroPackage) -> SearchResult {
 #[cfg(test)]
 mod tests {
     use super::chained_script;
+
+    #[test]
+    fn update_runs_only_the_sources_chosen_in_settings() {
+        use crate::config::AppSources;
+        let run = |src| super::update_all_args(src).join(" ");
+        let flatpak_only = run(AppSources::new(true, false, false, false));
+        assert!(flatpak_only.contains("flatpak update"), "{flatpak_only}");
+        assert!(!flatpak_only.contains("snap refresh"), "{flatpak_only}");
+        assert!(!flatpak_only.contains("spotty-dnf5daemon"), "{flatpak_only}");
+        let none = run(AppSources::new(false, false, false, false));
+        assert!(!none.contains("flatpak update") && !none.contains("snap refresh"), "{none}");
+        assert!(AppSources::new(false, true, false, false).includes("dnf"));
+        assert!(!AppSources::new(false, true, false, false).includes("flatpak"));
+    }
 
     /// Fill the cache so `update_verb_rows` doesn't kick off a live
     /// dnf/flatpak check inside the test.
@@ -3570,7 +3538,9 @@ pub fn update_notice(cfg: &Config) -> Option<(usize, String)> {
     if cfg.update_dismissed_sig == sig {
         return None;
     }
-    Some((updates.len(), sig))
+    let src = cfg.update_sources();
+    let n = updates.iter().filter(|u| src.includes(&u.source)).count();
+    (n > 0).then_some((n, sig))
 }
 
 /// Host-side probe: layered reboot-required signals so every distro family
