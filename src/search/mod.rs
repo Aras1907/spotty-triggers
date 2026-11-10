@@ -536,6 +536,29 @@ fn ordered_score(position: usize, index: usize) -> i32 {
     ORDER_TOP - position * ORDER_BAND - (index as i32).min(ORDER_BAND - 1)
 }
 
+/// Lifted name matches sit just above the top band (900 000) and below rows
+/// the user has picked before (≥ 920 050).
+const LIFT_TOP: i32 = 900_001;
+
+/// How much of an app's name the query covers, 1..=1000 (1000 = exact), when
+/// the name starts with the query. `Install: X` rows are judged by `X`.
+/// Queries under 3 chars match too many names to override the user's order.
+fn name_coverage(query: &str, title: &str) -> Option<i32> {
+    let q = query.chars().count();
+    if q < 3 {
+        return None;
+    }
+    let tpl = gettext("Install: {name}");
+    let (pre, suf) = tpl.split_once("{name}").unwrap_or(("", ""));
+    let name = title
+        .strip_prefix(pre)
+        .and_then(|t| t.strip_suffix(suf))
+        .unwrap_or(title)
+        .to_lowercase();
+    let n = name.chars().count();
+    name.starts_with(query).then(|| (q * 1000 / n.max(1)).clamp(1, 1000) as i32)
+}
+
 /// The regular search: every source's rows, ranked by the order the user gave
 /// result types and triggers in Settings (highest first), and by each source's
 /// own relevance within it. Pins lead, running operations follow them, and
@@ -611,20 +634,27 @@ pub fn universal_results(
     // Bands in the user's order; anything unlisted after them.
     let mut ranked: Vec<SearchResult> = Vec::new();
     let order = config.ordered_ids();
-    let mut place = |rows: &mut Vec<SearchResult>, position: usize, ranked: &mut Vec<SearchResult>| {
+    let qt = ql.trim();
+    let mut place = |rows: &mut Vec<SearchResult>, position: usize, ranked: &mut Vec<SearchResult>, lift: bool| {
         rows.sort_by(|a, b| b.score.cmp(&a.score));
         for (i, mut r) in rows.drain(..).enumerate() {
             r.score = ordered_score(position, i);
+            // An app or install row whose name starts with the query beats
+            // every band: "librewolf" → `Install: LibreWolf` above a typo
+            // match on an installed LibreOffice.
+            if let Some(c) = lift.then(|| name_coverage(qt, &r.title)).flatten() {
+                r.score = LIFT_TOP + c;
+            }
             ranked.push(r);
         }
     };
     for (position, id) in order.iter().enumerate() {
         if let Some(mut rows) = sources.remove(id) {
-            place(&mut rows, position, &mut ranked);
+            place(&mut rows, position, &mut ranked, id == "apps" || id == "newapps");
         }
     }
     let mut rest: Vec<SearchResult> = sources.into_values().flatten().collect();
-    place(&mut rest, ORDER_SLOTS, &mut ranked);
+    place(&mut rest, ORDER_SLOTS, &mut ranked, false);
     for (i, mut r) in last.into_iter().enumerate() {
         r.score = 1_000 - i as i32;
         ranked.push(r);
@@ -633,7 +663,6 @@ pub fn universal_results(
     // Above the bands (below pins and operations): a row titled exactly what
     // was typed, then rows the user has picked before for this query, most
     // often picked first. Ties keep the band order.
-    let qt = ql.trim();
     for r in ranked.iter_mut() {
         let learned = crate::history::frequency_bonus_for(qt, &r.title);
         if let Some(position) = update_verb_rows
@@ -904,6 +933,20 @@ fn search_keyword(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn name_coverage_ranks_exact_install_over_typo_matches() {
+        // Exact install row: full coverage.
+        assert_eq!(name_coverage("librewolf", "Install: LibreWolf"), Some(1000));
+        // Typo-only installed app: not lifted, stays in its band.
+        assert_eq!(name_coverage("librewolf", "LibreOffice Base"), None);
+        // Closer-length names cover more of the query.
+        let short = name_coverage("libre", "LibreWolf").unwrap();
+        let long = name_coverage("libre", "LibreOffice Impress").unwrap();
+        assert!(short > long);
+        // Short queries keep the user's band order.
+        assert_eq!(name_coverage("li", "LibreWolf"), None);
+    }
 
     #[test]
     fn a_result_type_mode_searches_only_its_results() {

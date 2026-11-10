@@ -2,7 +2,9 @@
 
 - Work only in this opened project folder. Do not modify system/root files or
   files in Documents or Downloads.
-- Build and install natively with Cargo. Do not use a Flatpak build.
+- Never install a local Cargo build. Spotty is pushed to GitHub, built as a
+  Flatpak by CI (`release.yml`), and installed from the GitHub release with
+  `flatpak install --user`. See the `build-and-install` skill.
 - Always use Luna (`gpt-6-luna`) for delegated work. Use focused Luna subagents
   for implementation, debugging, and review; the primary agent coordinates,
   verifies, builds, and integrates their changes.
@@ -28,7 +30,8 @@
   back into Spotty. They were removed on purpose; only add one if the user asks.
 - Never store, log or print a password, token or other secret.
 - Never add LibreOffice, `soffice` or `libreoffice` conversions.
-- Never build or run a Flatpak.
+- Never build a Flatpak locally or copy a Cargo binary into `~/.local/bin`.
+  The only installed Spotty is the GitHub release Flatpak.
 - Never edit `trigger-backends/` inside `.integration/Spotty` by hand. Change this
   repo, then run `python3 tools/sync_to_spotty.py`.
 - Never run blocking network or disk work on the GTK main thread. Async work uses
@@ -41,8 +44,9 @@
   the binary with `readlink /proc/<pid>/exe`.
 - Never change a manifest's behaviour without bumping its `version`, or leave
   `index.json` and a manifest out of step.
-- Never commit, push or open a PR unless the user asks. When asked, push only this
-  trigger repo.
+- Never open a PR unless the user asks. Shipping a Spotty change means
+  committing and pushing both this repo and `.integration/Spotty`
+  (`Aras1907/Spotty`) and tagging a `v*` release; that is the install path.
 
 ## How to verify
 
@@ -50,13 +54,12 @@ Run the checks that match your change. The `verify-before-push` skill has the
 full list.
 
 - Sync this repo into the Spotty checkout:
-  `cd /home/aras/development/spotty-triggers && python3 tools/sync_to_spotty.py`
+  `cd /home/aras/development/Spotty/spotty-triggers && python3 tools/sync_to_spotty.py`
 - Spotty unit tests (host, native Cargo):
-  `flatpak-spawn --host sh -c 'cd /home/aras/development/spotty-triggers/.integration/Spotty && OPENSSL_NO_VENDOR=1 cargo test --bin spotty'`
+  `flatpak-spawn --host sh -c 'cd /home/aras/development/Spotty/spotty-triggers/.integration/Spotty && OPENSSL_NO_VENDOR=1 cargo test --bin spotty'`
   Plain `cargo test` fails in the Spotty checkout because of a broken example, so
   always use `--bin spotty`.
-- Release build (host, native Cargo):
-  `flatpak-spawn --host sh -c 'cd /home/aras/development/spotty-triggers/.integration/Spotty && OPENSSL_NO_VENDOR=1 cargo build --release'`
+- Release build: CI only. Push a `v*` tag; never install a local build.
 - Manifest and catalog check, install and restart: see `verify-before-push` and
   `build-and-install`.
 

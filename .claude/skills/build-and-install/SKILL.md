@@ -1,72 +1,70 @@
 ---
 name: build-and-install
-description: Use after changing Spotty code or trigger manifests in this repo, or when asked to build, install, restart or check the running Spotty. Covers the sync into the Spotty checkout, the host Cargo build, copying the binary to ~/.local/bin, and a safe daemon restart.
+description: Use after changing Spotty code or trigger manifests in this repo, or when asked to build, install, restart or check the running Spotty. Covers the sync into the Spotty checkout, pushing to GitHub, the CI Flatpak release, and installing that Flatpak from GitHub.
 ---
 
-# Build and install Spotty
+# Ship and install Spotty
 
-Build natively with Cargo on the host. The sandbox cannot build Spotty (GTK dev
-files are missing). Never build a Flatpak.
+Never install a local Cargo build and never build a Flatpak locally. GitHub CI
+(`.github/workflows/release.yml` in `Aras1907/Spotty`) builds the Flatpak; the
+machine runs the Flatpak from the GitHub release (`com.spotty.Spotty`, `--user`).
 
 ## 1. Sync this repo into the Spotty checkout
 
 ```sh
-cd /home/aras/development/spotty-triggers && python3 tools/sync_to_spotty.py
+cd /home/aras/development/Spotty/spotty-triggers && python3 tools/sync_to_spotty.py
 ```
 
-It prints `synced <path>` per changed file, then `N files updated`. Never copy
-into `trigger-backends/` by hand, and do not use `cp -p` or `rsync -a`: old mtimes
-can make cargo report "Finished" with a stale binary.
+Never copy into `trigger-backends/` by hand.
 
-## 2. Build on the host
+## 2. Check the code (optional, never installed)
 
 ```sh
-flatpak-spawn --host sh -c 'cd /home/aras/development/spotty-triggers/.integration/Spotty && OPENSSL_NO_VENDOR=1 cargo build --release'
+flatpak-spawn --host sh -c 'cd /home/aras/development/Spotty/spotty-triggers/.integration/Spotty && OPENSSL_NO_VENDOR=1 cargo test --bin spotty'
 ```
 
-- The build is slow. Run it in the background (Bash `run_in_background`) and read
-  the output when it finishes. A `( ... &)` subshell dies with the tool call.
-- Success: the output ends with `Finished` and has no `error`.
+Compare failures with the known baseline. This is a check only; the binary is
+not installed.
 
-If the build fails, stop. The running daemon is untouched.
+## 3. Bump the version and release notes
 
-## 3. Stop the running daemon (only after a good build)
+In `.integration/Spotty`: bump `version` in `Cargo.toml` (and `Cargo.lock`,
+plus any metainfo release entry the previous release commit touched), and
+update "What's new" in `packaging/release-notes.md`.
+
+## 4. Commit and push both repos, then tag
 
 ```sh
-pgrep -x spotty
-readlink /proc/<pid>/exe
-kill <pid>
+cd /home/aras/development/Spotty/spotty-triggers && git add -A <changed files> && git commit && git push
+cd .integration/Spotty && git add <changed files> && git commit -m "Spotty X.Y.Z: ..." && git push
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
-Check each PID's binary with `readlink`, then send SIGTERM with `kill`. This is
-the signal `spotty --quit` sends. Run `pgrep -x spotty` again until it prints
-nothing. Do not use SIGKILL unless the user asks. Never use `pkill -f`.
+Stage only files you changed. The tag starts the release workflow.
 
-## 4. Install and start
-
-Install only after the old process has exited. Writing to a running executable
-fails with "Text file busy".
+## 5. Wait for CI
 
 ```sh
-mkdir -p /home/aras/.local/bin && cp /home/aras/development/spotty-triggers/.integration/Spotty/target/release/spotty /home/aras/.local/bin/spotty
-/home/aras/.local/bin/spotty
+gh run list -R Aras1907/Spotty --limit 3
+gh run watch -R Aras1907/Spotty <run-id> --exit-status
 ```
 
-With no arguments, Spotty starts a detached daemon and returns. If a daemon is
-already running, it does nothing.
+Run the watch in the background. If CI fails, stop and report; nothing is
+published and the installed Flatpak is untouched.
 
-## 5. Verify
+## 6. Install the release Flatpak
 
 ```sh
-pgrep -x spotty
-readlink /proc/<pid>/exe
-cmp /home/aras/development/spotty-triggers/.integration/Spotty/target/release/spotty /home/aras/.local/bin/spotty && echo same
+d=$(mktemp -d) && gh release download vX.Y.Z -R Aras1907/Spotty -p '*x86_64*.flatpak' -D "$d"
+flatpak-spawn --host flatpak install --user -y --noninteractive "$d"/*.flatpak
 ```
 
-- `readlink` must print `/home/aras/.local/bin/spotty`. A ` (deleted)` suffix
-  means the daemon still runs an old file.
-- `cmp` must print `same`.
-- `spotty --toggle` reaches only a daemon running the same executable path.
+## 7. Restart and verify
 
-Report the `readlink` and `cmp` results. Do not say "installed" without them. Run
-`verify-before-push` first.
+```sh
+flatpak-spawn --host flatpak kill com.spotty.Spotty
+flatpak-spawn --host flatpak run com.spotty.Spotty &
+flatpak-spawn --host flatpak info --user com.spotty.Spotty | grep -i version
+```
+
+Report the installed version. Do not say "installed" without it.

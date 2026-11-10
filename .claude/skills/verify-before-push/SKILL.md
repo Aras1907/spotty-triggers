@@ -10,7 +10,7 @@ Run the checks that match the change.
 ## 1. Review the diff
 
 ```sh
-cd /home/aras/development/spotty-triggers && git status --short && git diff --stat && git diff --check
+cd /home/aras/development/Spotty/spotty-triggers && git status --short && git diff --stat && git diff --check
 ```
 
 `git diff --check` must print nothing. Read the diff: only what the task asked for,
@@ -24,7 +24,7 @@ and each catalog id needs a manifest. It ends with `problems: 0` when clean.
 The script cannot tell whether behaviour changed; if it did, bump `version` in both files.
 
 ```sh
-cd /home/aras/development/spotty-triggers && python3 - <<'EOF'
+cd /home/aras/development/Spotty/spotty-triggers && python3 - <<'EOF'
 import json, glob, os
 ix = {e["id"]: e for e in json.load(open("index.json"))}
 bad = 0
@@ -44,15 +44,16 @@ EOF
 ## 3. Sync and Spotty tests
 
 ```sh
-cd /home/aras/development/spotty-triggers && python3 tools/sync_to_spotty.py
-flatpak-spawn --host sh -c 'cd /home/aras/development/spotty-triggers/.integration/Spotty && OPENSSL_NO_VENDOR=1 cargo test --bin spotty'
+cd /home/aras/development/Spotty/spotty-triggers && python3 tools/sync_to_spotty.py
+flatpak-spawn --host sh -c 'cd /home/aras/development/Spotty/spotty-triggers/.integration/Spotty && OPENSSL_NO_VENDOR=1 cargo test --bin spotty'
 ```
 
 Never run plain `cargo test` in the Spotty checkout; a broken example makes it fail.
 
 ## 4. Release build and docs
 
-- Run the build step in `build-and-install`. Only a build ending with `Finished` passes.
+- The release build runs in CI only (see `build-and-install`). Only a green
+  release workflow passes. Never install a local Cargo build.
 - `README.md`: the trigger table matches the manifests.
 - `PRIVACY_AND_SECURITY.md`: updated if stored data, network traffic or a secret path changed.
 - `ARCHITECTURE.md` and `AGENTS.md`: updated if a path, file or rule changed.
@@ -64,9 +65,9 @@ on-screen GTK behaviour, and the Store until the user pushes.
 
 ## Push rule
 
-- Commit and push only when the user asks.
-- Push only this trigger repo, `/home/aras/development/spotty-triggers`. Do not
-  push the Spotty checkout unless told to.
+- Shipping a Spotty change is the install path: commit and push this repo and
+  the Spotty checkout (`Aras1907/Spotty`), tag `v*`, install the release
+  Flatpak (see `build-and-install`). Stage only files you changed.
 - End commit messages and PR descriptions with the attribution lines in the
   session's system reminder, when there is one.
 - Pushing the catalog makes new `index.json` entries appear in the Store. Tell the user.
