@@ -56,7 +56,7 @@ Never run plain `cargo test` in the Spotty checkout; a broken example makes it f
   release workflow passes. Never install a local Cargo build.
 - `README.md`: the trigger table matches the manifests.
 - `PRIVACY_AND_SECURITY.md`: updated if stored data, network traffic or a secret path changed.
-- `ARCHITECTURE.md` and `AGENTS.md`: updated if a path, file or rule changed.
+- `ARCHITECTURE.md` and `CLAUDE.md`: updated if a path, file or rule changed.
 
 ## 5. Report what you did not run
 

@@ -22,13 +22,10 @@ attributes. The `README.md` calls `trigger-backends` a pinned submodule; the wor
 the copy described above. Check with `git -C .integration/Spotty/trigger-backends status`
 before assuming either.
 
-Spotty's own `CLAUDE.md` (in the Spotty checkout, read-only for us) is partly
-out of date. It describes a Flatpak-first build and says there is no test
-suite. For this workspace, `AGENTS.md` wins: native Cargo builds and the tests
-listed in `AGENTS.md`. Its rules on LibreOffice, the single GTK main thread and
-`futures` (not tokio) still apply. The glib signal-handler rule (always return
-`Some(bool)`) and the gsettings rule (quote string values) come from this
-project's brief, not from that file; they are kept as rules in `AGENTS.md`.
+Spotty's own `CLAUDE.md` (in the Spotty checkout) describes Spotty's
+architecture and its rules. The workspace `CLAUDE.md` wins where they differ:
+releases are built by CI as Flatpaks, and the tests run with
+`cargo test --bin spotty`.
 
 ## Repository map
 
