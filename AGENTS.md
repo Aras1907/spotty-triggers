@@ -26,6 +26,13 @@
 
 ## Never
 
+- Never add a GNOME Shell extension, with one exception the user approved on
+  2026-11-10: the optional Spotty Focus extension
+  (`.integration/Spotty/data/gnome-shell-extension/`, `src/focus_ext.rs`).
+  The user installs and removes it in Settings → Apps; Spotty must keep
+  working without it. This overrides the "no extensions, ever" line in
+  `.integration/Spotty/CLAUDE.md` for this extension only.
+
 - Never add a Proton integration (Mail Bridge, Calendar, Drive, Pass or VPN)
   back into Spotty. They were removed on purpose; only add one if the user asks.
 - Never store, log or print a password, token or other secret.
