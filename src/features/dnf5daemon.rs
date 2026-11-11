@@ -234,6 +234,9 @@ impl Session {
         task.status("Update ready for restart");
         match self.offline_status()? {
             OfflineStatus::Armed => Ok(()),
+            // dnf5daemon 5.4 only stores the download; without this the
+            // restart installs nothing.
+            OfflineStatus::Downloaded => self.schedule(),
             other => Err(format!(
                 "Update stored but not armed for the next boot ({other:?})"
             )),

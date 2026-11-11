@@ -3812,6 +3812,39 @@ fn staged_via_packagekit() -> bool {
     REBOOT_REASON.load(Ordering::SeqCst) == REBOOT_PK_OFFLINE_STAGED
 }
 
+/// Run a confirmed command. The restart first arms an update that is only
+/// downloaded, because a plain reboot would leave it uninstalled. Arming may
+/// ask for a password (polkit), so it runs off the main thread, and a failure
+/// cancels the restart instead of rebooting into the old packages.
+pub fn run_confirmed(cmd: String) {
+    if cmd != crate::search::system::reboot_command() || !offline_update_staged() {
+        let _ = crate::app::spawn_host_shell_command(&cmd);
+        return;
+    }
+    let via_packagekit = staged_via_packagekit();
+    std::thread::spawn(move || {
+        let armed = if via_packagekit {
+            crate::packagekit::trigger_offline().map_err(String::from)
+        } else {
+            crate::dnf5daemon::Session::open().and_then(|s| s.schedule())
+        };
+        glib::MainContext::default().invoke(move || match armed {
+            Ok(()) => {
+                let _ = crate::app::spawn_host_shell_command(&cmd);
+            }
+            Err(e) => {
+                log::warn!("restart: could not schedule the update: {e}");
+                crate::app::send_desktop_notification(
+                    "Spotty",
+                    &gettext("Restart cancelled: the update could not be scheduled ({e})")
+                        .replace("{e}", &e),
+                );
+                refresh_reboot_state();
+            }
+        });
+    });
+}
+
 /// True when the pending reboot installs a downloaded update: the daemon has
 /// marked it for the next boot, so this restart is what applies the packages.
 pub fn offline_update_armed() -> bool {

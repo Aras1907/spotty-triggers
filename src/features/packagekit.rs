@@ -662,7 +662,7 @@ pub fn offline_armed() -> bool {
 
 /// Arm the downloaded update for the next boot — the store's "restart & update"
 /// call, minus the restart.
-fn trigger_offline() -> Result<(), Failure> {
+pub(crate) fn trigger_offline() -> Result<(), Failure> {
     let conn = gio::bus_get_sync(gio::BusType::System, gio::Cancellable::NONE)
         .map_err(|e| Failure::plain(format!("system bus: {e}")))?;
     call(
