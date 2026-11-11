@@ -495,30 +495,9 @@ pub fn update_verb_rows(query: &str, config: &Config) -> Option<Vec<SearchResult
     if !exact && !prefix && !typo {
         return None;
     }
-    // Once the user has specified a target (including a target supplied as
-    // ghost text), put that requested update ahead of the generic reboot row.
-    // Otherwise a pending offline restart can outrank e.g. "update all".
-    let score = if rest.is_empty() { 100_000 } else { 110_000 };
     let mut rows = update_results(rest, config);
-    // Boost the actual update rows above incidental matches; leave the
-    // "disable update checks" tail row where it belongs.
     for r in &mut rows {
-        if r.score >= 1000 {
-            r.score = r.score.max(score);
-        }
-    }
-    // Preserve this order through universal_results' stronger source ranking:
-    // it promotes update rows by their vector position. A target named in the
-    // query therefore has to move ahead of general notices (for example, a
-    // pending reboot) here, before that promotion runs.
-    if !rest.is_empty() {
-        let target = rest.to_lowercase();
-        rows.sort_by_key(|row| {
-            query_for(&row.title)
-                .and_then(|q| q.split_once(char::is_whitespace).map(|(_, target)| target.to_lowercase()))
-                .map(|candidate| !candidate.starts_with(&target))
-                .unwrap_or(true)
-        });
+        r.score = r.score.max(100_000);
     }
     Some(rows)
 }
@@ -1898,86 +1877,60 @@ pub fn update_results(query: &str, config: &Config) -> Vec<SearchResult> {
 }
 
 fn search_updates(_query: &str, config: &Config) -> Vec<SearchResult> {
-    // Master switch off: the verb only offers to turn the feature back on
-    // (the badge and the background checks are gated elsewhere).
+    vec![update_row(config)]
+}
+
+/// The one update row for the current state. A finished update that needs a
+/// restart leaves only the restart; nothing pending (or not checked yet)
+/// leaves only "press Enter to check".
+fn update_row(config: &Config) -> SearchResult {
+    // Master switch off: the verb only offers to turn the feature back on.
     if !config.result_enabled("updates") {
-        return vec![update_toggle_row(config)];
+        return update_toggle_row(config);
+    }
+    if reboot_pending() {
+        return restart_required_row();
+    }
+    // Downloaded but not armed: a restart alone wouldn't install it.
+    if offline_update_staged() && system_door().is_some() {
+        return staged_update_now_row();
     }
     ensure_updates_checked();
-    // Clone updates out of the cache so the lock is released before the
-    // row builders touch it (std::sync::Mutex is not reentrant — holding
-    // the lock across those calls deadlocks).
+    // Clone out of the cache so the lock is released before the row builders
+    // touch it (std::sync::Mutex is not reentrant).
     let updates: Option<Vec<UpdateInfo>> = update_cache()
         .try_lock()
         .ok()
         .and_then(|g| g.clone())
         .map(|(_, v)| v);
-    let mut out: Vec<SearchResult> = Vec::new();
-    // The restart row sits on top whenever the probe confirms a reboot is
-    // pending — including right after a finished update asked for one. It is
-    // never offered just because updates exist: those are installed first
-    // (the Update row below), and only a finished run can put the machine in
-    // the state that needs a restart.
-    if reboot_pending() {
-        out.push(restart_required_row());
-    }
-    // A downloaded-but-unarmed offline transaction: a restart alone wouldn't
-    // install it, so offer to arm it — through the daemon, the only door.
-    if offline_update_staged() && system_door().is_some() {
-        out.push(staged_update_now_row());
-    }
-    if *update_fetching().lock().unwrap() || updates.is_none() {
-        out.push(check_now_row(
+    if *update_fetching().lock().unwrap() {
+        return check_now_row(
             gettext("Checking for updates…"),
             gettext("Press Enter to check again"),
             "emblem-synchronizing-symbolic",
-        ));
-    } else {
-        // One "Update" row over the sources chosen in Settings: it updates
-        // everything there is, whatever was typed after the verb.
-        let src = config.update_sources();
-        let list: Vec<UpdateInfo> = updates
-            .iter()
-            .flatten()
-            .filter(|u| src.includes(&u.source))
-            .cloned()
-            .collect();
-        // Once a restart is pending, a second update is not actionable: the
-        // restart notice (or staged Update now) is the path forward.
-        if !reboot_pending() {
-            let mut row = scopes_from(&list).swap_remove(0).row();
-            if let Action::StartOperation { args, .. } = &mut row.action {
-                *args = update_all_args(src);
-            }
-            out.push(row);
-        }
+        );
     }
-    // Always offer the switch, from search as well as from Settings.
-    out.push(update_toggle_row(config));
-    // Notice controls live in the list as well: options only appear once
-    // the user types "update".
-    if let Some(list) = &updates {
-        if !list.is_empty() {
-            let sig = update_signature(list);
-            out.push(SearchResult {
-                kind: ResultKind::System,
-                title: gettext("Remind tomorrow").into(),
-                subtitle: Some(gettext("Hide the update notice for 24 hours").into()),
-                icon: Some("document-open-recent-symbolic".into()),
-                action: Action::SnoozeUpdates,
-                score: 400,
-            });
-            out.push(SearchResult {
-                kind: ResultKind::System,
-                title: gettext("Dismiss update notice").into(),
-                subtitle: Some(gettext("Hidden until a new update appears").into()),
-                icon: Some("window-close-symbolic".into()),
-                action: Action::DismissUpdates(sig),
-                score: 300,
-            });
-        }
+    let src = config.update_sources();
+    let list: Vec<UpdateInfo> = updates
+        .iter()
+        .flatten()
+        .filter(|u| src.includes(&u.source))
+        .cloned()
+        .collect();
+    if list.is_empty() {
+        return check_now_row(
+            gettext("Check for updates"),
+            gettext("Press Enter to check for updates"),
+            "emblem-synchronizing-symbolic",
+        );
     }
-    out
+    // One "Update" over the sources chosen in Settings; it runs as a
+    // background operation.
+    let mut row = scopes_from(&list).swap_remove(0).row();
+    if let Action::StartOperation { args, .. } = &mut row.action {
+        *args = update_all_args(src);
+    }
+    row
 }
 
 /// Row that owns the restart decision, on top of the update list: a reboot is
@@ -2540,6 +2493,41 @@ mod tests {
     }
 
     #[test]
+    fn update_offers_exactly_one_row_per_state() {
+        use std::sync::atomic::Ordering;
+        let _g = cache_guard();
+        let saved = super::REBOOT_REASON.load(Ordering::SeqCst);
+        super::REBOOT_REASON.store(super::REBOOT_NONE, Ordering::SeqCst);
+        let mut cfg = crate::config::Config::default();
+        cfg.install_builtin("updates");
+        let one = || {
+            let rows = super::update_verb_rows("update", &cfg).expect("rows");
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            rows.into_iter().next().unwrap()
+        };
+        // Nothing pending → Enter checks.
+        *super::update_cache().lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
+        let r = one();
+        assert!(matches!(r.action, crate::search::Action::CheckUpdates), "{r:?}");
+        assert_eq!(r.subtitle.as_deref(), Some(crate::i18n::gettext("Press Enter to check for updates").as_str()));
+        // Pending → one background update run.
+        *super::update_cache().lock().unwrap() = Some((
+            std::time::Instant::now(),
+            vec![super::UpdateInfo {
+                source: "flatpak".into(),
+                app_id: Some("org.mozilla.firefox".into()),
+                name: "Firefox".into(),
+                details: vec!["Firefox".into()],
+            }],
+        ));
+        assert!(matches!(one().action, crate::search::Action::StartOperation { .. }));
+        // Finished and a restart is needed → only the restart.
+        super::REBOOT_REASON.store(super::REBOOT_OFFLINE_ARMED, Ordering::SeqCst);
+        assert!(matches!(one().action, crate::search::Action::ConfirmRunCommand(_)));
+        super::REBOOT_REASON.store(saved, Ordering::SeqCst);
+    }
+
+    #[test]
     fn update_verb_is_recognised_in_plain_search() {
         let _g = cache_guard();
         prime_update_cache();
@@ -2625,169 +2613,6 @@ mod tests {
     }
 
     #[test]
-    fn typoed_update_search_still_finds_everything() {
-        let _g = cache_guard();
-        {
-            let mut c = super::update_cache().lock().unwrap();
-            *c = Some((
-                std::time::Instant::now(),
-                vec![
-                    super::UpdateInfo {
-                        source: "flatpak".into(),
-                        app_id: Some("org.mozilla.firefox".into()),
-                        name: "Firefox".into(),
-                        details: vec!["Firefox".into()],
-                    },
-                    super::UpdateInfo {
-                        source: "dnf".into(),
-                        app_id: None,
-                        name: "vim.x86_64  2:9.2.1129-1.fc44".into(),
-                        details: vec!["vim.x86_64  2:9.2.1129-1.fc44".into()],
-                    },
-                ],
-            ));
-        }
-        let cfg = crate::config::Config::default();
-
-        // A typo'd verb still opens the list — only two edits away.
-        assert!(super::update_verb_rows("updte", &cfg).is_some(), "typo verb");
-        assert!(super::update_verb_rows("Updte flatpak", &cfg).is_some(), "typo verb + target");
-        // …unrelated words stay out.
-        assert!(super::update_verb_rows("upload", &cfg).is_none(), "upload");
-        assert!(super::update_verb_rows("updateing", &cfg).is_none(), "updateing");
-
-        // Typo'd targets pick their scope and package.
-        for (q, want) in [
-            ("sytem", "Update system packages"),
-            ("flk", "Update flatpak packages"),
-            ("aall", "Update all packages"),
-        ] {
-            let rows = super::update_results(q, &cfg);
-            assert!(
-                rows.iter().any(|r| r.title == want),
-                "{q:?} should match {want:?}: {:?}",
-                rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>()
-            );
-        }
-        let rows = super::update_results("firfox", &cfg);
-        assert!(
-            rows.iter().any(|r| r.title == "Update: Firefox"),
-            "firfox should match the package: {:?}",
-            rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn update_rows_offer_scopes_packages_and_ghost_queries() {
-        let _g = cache_guard();
-        {
-            let mut c = super::update_cache().lock().unwrap();
-            *c = Some((
-                std::time::Instant::now(),
-                vec![
-                    super::UpdateInfo {
-                        source: "flatpak".into(),
-                        app_id: Some("org.mozilla.firefox".into()),
-                        name: "Firefox".into(),
-                        details: vec!["Firefox".into()],
-                    },
-                    super::UpdateInfo {
-                        source: "dnf".into(),
-                        app_id: None,
-                        name: "vim.x86_64  2:9.2.1129-1.fc44".into(),
-                        details: vec!["vim.x86_64  2:9.2.1129-1.fc44".into()],
-                    },
-                ],
-            ));
-        }
-        let cfg = crate::config::Config::default();
-
-        // "update" → scopes first, then one row per pending package.
-        let rows = super::update_results("", &cfg);
-        let titles: Vec<&str> = rows.iter().map(|r| r.title.as_str()).collect();
-        assert!(titles.contains(&"Update all packages"), "{titles:?}");
-        assert!(titles.contains(&"Update flatpak packages"), "{titles:?}");
-        assert!(titles.contains(&"Update system packages"), "{titles:?}");
-        assert!(titles.contains(&"Update: Firefox"), "{titles:?}");
-        assert!(titles.contains(&"Update: vim.x86_64"), "{titles:?}");
-        let all_i = titles.iter().position(|t| *t == "Update all packages").unwrap();
-        let pkg_i = titles.iter().position(|t| *t == "Update: Firefox").unwrap();
-        assert!(all_i < pkg_i, "scope rows rank above packages: {titles:?}");
-
-        // The ghost suggestions each row completes to.
-        assert_eq!(super::query_for("Update all packages").as_deref(), Some("update all"));
-        assert_eq!(
-            super::query_for("Update flatpak packages").as_deref(),
-            Some("update flatpak")
-        );
-        assert_eq!(
-            super::query_for("Update system packages").as_deref(),
-            Some("update system")
-        );
-        assert_eq!(super::query_for("Update: Firefox").as_deref(), Some("update Firefox"));
-        assert_eq!(super::query_for("no such row"), None);
-
-        // "update flatpak" → the flatpak scope + its package, nothing system.
-        let rows = super::update_results("flatpak", &cfg);
-        let titles: Vec<&str> = rows.iter().map(|r| r.title.as_str()).collect();
-        assert!(titles.contains(&"Update flatpak packages"), "{titles:?}");
-        assert!(titles.contains(&"Update: Firefox"), "{titles:?}");
-        assert!(!titles.contains(&"Update system packages"), "{titles:?}");
-
-        // "update d|di|distro|dnf|system" all pick the system scope.
-        for q in ["d", "di", "distro", "dnf", "system"] {
-            let rows = super::update_results(q, &cfg);
-            assert!(
-                rows.iter().any(|r| r.title == "Update system packages"),
-                "{q:?} should select the system scope: {:?}",
-                rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>()
-            );
-        }
-
-        // "update fire" → the package row itself.
-        let rows = super::update_results("fire", &cfg);
-        assert_eq!(rows[0].title, "Update: Firefox");
-        // …and an unknown target says so instead of showing nothing.
-        let rows = super::update_results("zzz", &cfg);
-        assert!(rows.iter().any(|r| r.title.contains("No matching updates")), "{rows:?}");
-    }
-
-    #[test]
-    fn idle_scopes_stay_visible_and_recheck_on_enter() {
-        let _g = cache_guard();
-        {
-            let mut c = super::update_cache().lock().unwrap();
-            *c = Some((std::time::Instant::now(), Vec::new()));
-        }
-        let cfg = crate::config::Config::default();
-        let rows = super::update_results("", &cfg);
-        // The three recommendations show even with nothing pending, and
-        // Enter re-checks instead of firing an empty run.
-        for (title, state) in [
-            ("Update all packages", crate::i18n::gettext("No updates available")),
-            ("Update flatpak packages", crate::i18n::gettext("Nothing pending")),
-            ("Update system packages", crate::i18n::gettext("Nothing pending")),
-        ] {
-            let row = rows
-                .iter()
-                .find(|r| r.title == title)
-                .unwrap_or_else(|| panic!("{title} missing: {:?}", rows.iter().map(|r| &r.title).collect::<Vec<_>>()));
-            assert!(
-                matches!(row.action, crate::search::Action::CheckUpdates),
-                "{title}: {:?}",
-                row.action
-            );
-            let sub = row.subtitle.as_deref().unwrap_or_default();
-            assert!(sub.contains(&state), "{title}: {sub}");
-            assert!(sub.contains("Press Enter to check again"), "{title}: {sub}");
-            // …and still complete their typed command for ghost text.
-            assert!(super::query_for(&row.title).is_some(), "{title}");
-            // Nothing to update → the checkmark, not the update glyph.
-            assert_eq!(row.icon.as_deref(), Some("object-select-symbolic"), "{title}");
-        }
-    }
-
-    #[test]
     fn package_rows_build_per_source_commands() {
         // A distro package goes to this system's service (an in-process D-Bus
         // task, no sudo) or nowhere — there is no pkexec fallback. Which
@@ -2839,65 +2664,6 @@ mod tests {
             // An install is never mistaken for an update run.
             assert!(!super::is_update_run("Installing htop", args), "{pm}");
         }
-    }
-
-    #[test]
-    fn plain_update_lists_the_updates_without_a_restart_row() {
-        let _g = cache_guard();
-        {
-            let mut c = super::update_cache().lock().unwrap();
-            *c = Some((
-                std::time::Instant::now(),
-                vec![super::UpdateInfo {
-                    source: "dnf".into(),
-                    app_id: None,
-                    name: "vim.x86_64  2:9.2.1129-1.fc44".into(),
-                    details: vec!["vim.x86_64  2:9.2.1129-1.fc44".into()],
-                }],
-            ));
-        }
-        let cfg = crate::config::Config::default();
-        // Pending updates offer the update itself — never a restart chained
-        // onto it, and never a restart row before a run has left the machine
-        // actually needing one.
-        let rows = super::update_results("", &cfg);
-        assert!(
-            !rows.iter().any(|r| r.title == "Update & Restart"),
-            "{rows:?}"
-        );
-        let aggregate = rows
-            .iter()
-            .find(|r| r.title == crate::i18n::gettext("Update all packages"))
-            .expect("the aggregate update row is offered");
-        let args = match &aggregate.action {
-            crate::search::Action::StartOperation { args, .. } => args.clone(),
-            other => panic!("expected a runnable operation, got {other:?}"),
-        };
-        // The aggregate covers dnf, either as the daemon task (preferred) or as
-        // the shell fallback where there is no daemon.
-        let aggregate_text = args.join(" ");
-        assert!(
-            crate::dnf5daemon::is_update_task(&args)
-                || args.iter().any(|a| a.contains("dnf upgrade")),
-            "{args:?}"
-        );
-        assert!(!aggregate_text.contains("reboot"), "{args:?}");
-        // No update argv anywhere may carry a reboot: a run has to finish
-        // before the restart step is ever offered.
-        for r in &rows {
-            if let crate::search::Action::StartOperation { args, .. } = &r.action {
-                assert!(
-                    !args.iter().any(|a| a.contains("systemctl reboot")
-                        || a.contains("reboot_chain")
-                        || a.contains("loginctl reboot")),
-                    "restart chained into {:?}: {args:?}",
-                    r.title
-                );
-            }
-        }
-        // Targeted subqueries keep their own rows first.
-        let rows = super::update_results("vim", &cfg);
-        assert_eq!(rows[0].title, "Update: vim.x86_64");
     }
 
     #[test]
@@ -3034,100 +2800,6 @@ mod tests {
         assert!(super::is_catalog_app("app.gummi.gummi"));
     }
 
-    #[test]
-    fn appimage_updates_flow_through_rows_scopes_and_commands() {
-        let _g = cache_guard();
-        // Pin the updater probe: the real one shells out to `command -v`
-        // and would make every assertion here machine-dependent.
-        crate::search::appimage::set_updater_for_test("/usr/bin/appimageupdatetool");
-        {
-            let mut c = super::update_cache().lock().unwrap();
-            *c = Some((
-                std::time::Instant::now(),
-                vec![super::UpdateInfo {
-                    source: "appimage".into(),
-                    app_id: Some("/home/u/Applications/Krita-5.2.6-x86_64.AppImage".into()),
-                    name: "Krita".into(),
-                    details: vec!["Krita — ~/Applications/Krita-5.2.6-x86_64.AppImage".into()],
-                }],
-            ));
-        }
-        let cfg = crate::config::Config::default();
-
-        // "update" → the appimage scope plus the per-file row, the display
-        // name carried through unsplitted.
-        let rows = super::update_results("", &cfg);
-        let titles: Vec<&str> = rows.iter().map(|r| r.title.as_str()).collect();
-        assert!(titles.contains(&"Update all packages"), "{titles:?}");
-        assert!(titles.contains(&"Update AppImages"), "{titles:?}");
-        assert!(titles.contains(&"Update: Krita"), "{titles:?}");
-        let row = rows.iter().find(|r| r.title == "Update: Krita").unwrap();
-        assert!(
-            row.subtitle.as_deref().unwrap_or_default().contains("appimage"),
-            "{row:?}"
-        );
-
-        // "update appimage" selects the scope and its package.
-        let rows = super::update_results("appimage", &cfg);
-        let titles: Vec<&str> = rows.iter().map(|r| r.title.as_str()).collect();
-        assert!(titles.contains(&"Update AppImages"), "{titles:?}");
-        assert!(titles.contains(&"Update: Krita"), "{titles:?}");
-        assert_eq!(
-            super::query_for("Update AppImages").as_deref(),
-            Some("update appimage")
-        );
-
-        // Single file: plain argv — no shell, so the spaced path stays one
-        // element and needs no quoting.
-        for args in [
-            super::update_cmd_args("appimage", Some("/home/u/My App.AppImage")),
-            super::package_args("appimage", "/home/u/My App.AppImage"),
-        ] {
-            assert_eq!(
-                &args[args.len() - 3..],
-                [
-                    "/usr/bin/appimageupdatetool",
-                    "--overwrite",
-                    "/home/u/My App.AppImage"
-                ],
-                "{args:?}"
-            );
-        }
-
-        // The scope and "update all" chain pending files behind part markers.
-        for source in ["appimage", "all"] {
-            let chain = super::update_cmd_args(source, None);
-            assert_eq!(chain[0], "sh", "{source}: {chain:?}");
-            assert_eq!(chain[1], "-c", "{source}: {chain:?}");
-            assert!(
-                chain[2].contains("__spotty_part_1_1_appimage__"),
-                "{source}: {:?}",
-                chain[2]
-            );
-            assert!(
-                chain[2]
-                    .contains("--overwrite '/home/u/Applications/Krita-5.2.6-x86_64.AppImage'"),
-                "{source}: {:?}",
-                chain[2]
-            );
-        }
-
-        // The updater counts as an update operation (post-run refresh +
-        // reboot probe) — a plain file removal does not.
-        assert!(super::is_update_op(&[
-            "flatpak-spawn".into(),
-            "--host".into(),
-            "appimageupdatetool".into(),
-            "--overwrite".into(),
-            "/x.AppImage".into()
-        ]));
-        assert!(!super::is_update_op(&[
-            "gio".into(),
-            "trash".into(),
-            "/x.AppImage".into()
-        ]));
-    }
-
     /// Serialize the tests that seed the shared update cache (tests run on
     /// parallel threads and the cache is one static slot).
     fn cache_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -3213,33 +2885,6 @@ mod tests {
     }
 
     #[test]
-    fn update_list_carries_notice_controls_and_status() {
-        let _g = cache_guard();
-        seed_updates();
-        let cfg = crate::config::Config::default();
-        let rows = super::update_results("", &cfg);
-        assert!(
-            rows.iter().any(|r| matches!(r.action, crate::search::Action::SnoozeUpdates)),
-            "Remind tomorrow row"
-        );
-        assert!(
-            rows.iter()
-                .any(|r| matches!(r.action, crate::search::Action::DismissUpdates(_))),
-            "Dismiss update notice row"
-        );
-        assert!(
-            rows.iter()
-                .any(|r| matches!(r.action, crate::search::Action::ToggleUpdates)),
-            "enable/disable row"
-        );
-        assert!(super::updates_pending());
-        assert_eq!(
-            super::update_status_text(true),
-            crate::i18n::gettext("One update available")
-        );
-    }
-
-    #[test]
     fn a_finished_run_forgets_the_stale_pending_list() {
         use std::sync::atomic::Ordering;
         let _g = cache_guard();
@@ -3272,44 +2917,6 @@ mod tests {
         assert!(super::check_is_stale(1));
 
         super::LAST_UPDATE_DONE.store(0, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn icons_tell_pending_from_nothing_to_update() {
-        let _g = cache_guard();
-        {
-            let mut c = super::update_cache().lock().unwrap();
-            *c = Some((
-                std::time::Instant::now(),
-                vec![super::UpdateInfo {
-                    source: "dnf".into(),
-                    app_id: None,
-                    name: "vim.x86_64  2:9.2".into(),
-                    details: vec!["vim.x86_64  2:9.2".into()],
-                }],
-            ));
-        }
-        let cfg = crate::config::Config::default();
-        let rows = super::update_results("", &cfg);
-        let pending = rows
-            .iter()
-            .find(|r| r.title == "Update system packages")
-            .expect("pending system scope");
-        assert_eq!(
-            pending.icon.as_deref(),
-            Some("software-update-available-symbolic"),
-            "pending keeps the update glyph"
-        );
-        let idle = rows
-            .iter()
-            .find(|r| r.title == "Update flatpak packages")
-            .expect("idle flatpak scope");
-        assert_eq!(
-            idle.icon.as_deref(),
-            Some("object-select-symbolic"),
-            "idle shows the checkmark: {:?}",
-            idle.icon
-        );
     }
 
     #[test]

@@ -337,7 +337,8 @@ pub fn trigger_suggestions(query: &str, config: &Config) -> Vec<SearchResult> {
     for kw in kw_iter {
         // Nothing to type for a word-less keyword, and nothing to enter for
         // one that is paused, uninstalled or a switched-off result type.
-        if kw.word.is_empty() || !config.keyword_usable(kw) {
+        // The update verb already gives the one update row.
+        if kw.word.is_empty() || kw.id == "updates" || !config.keyword_usable(kw) {
             continue;
         }
         let dn = kw.display_name().to_lowercase();
