@@ -560,6 +560,24 @@ fn name_coverage(query: &str, title: &str) -> Option<i32> {
     name.starts_with(query).then(|| (q * 1000 / n.max(1)).clamp(1, 1000) as i32)
 }
 
+/// How far an app row lifts above the bands: an installed app whose name
+/// starts with the query, then an installed app with a description word
+/// containing it ("mail" → Hylki, "email client"), then install rows by name.
+fn app_lift(query: &str, r: &SearchResult) -> Option<i32> {
+    let installed = r.kind == ResultKind::App;
+    if let Some(c) = name_coverage(query, &r.title) {
+        return Some(if installed { 2000 + c } else { c });
+    }
+    let described = installed
+        && query.chars().count() >= 3
+        && r.subtitle.as_deref().is_some_and(|d| {
+            d.to_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|w| w.contains(query))
+        });
+    described.then_some(1500)
+}
+
 /// The regular search: every source's rows, ranked by the order the user gave
 /// result types and triggers in Settings (highest first), and by each source's
 /// own relevance within it. Pins lead, running operations follow them, and
@@ -643,7 +661,7 @@ pub fn universal_results(
             // An app or install row whose name starts with the query beats
             // every band: "librewolf" → `Install: LibreWolf` above a typo
             // match on an installed LibreOffice.
-            if let Some(c) = lift.then(|| name_coverage(qt, &r.title)).flatten() {
+            if let Some(c) = lift.then(|| app_lift(qt, &r)).flatten() {
                 r.score = LIFT_TOP + c;
             }
             ranked.push(r);
@@ -934,6 +952,26 @@ fn search_keyword(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_installed_app_described_by_the_query_beats_install_rows() {
+        let row = |kind, title: &str, sub: &str| SearchResult {
+            kind,
+            title: title.into(),
+            subtitle: Some(sub.into()),
+            icon: None,
+            action: Action::CheckUpdates,
+            score: 0,
+        };
+        let hylki = row(ResultKind::App, "Hylki", "A fast, GNOME-native email client");
+        let install = row(ResultKind::System, "Install: Mailspring", "The best email app");
+        let math = row(ResultKind::App, "LibreOffice Math", "Create and edit scientific formulas");
+        let named = row(ResultKind::App, "Mailbox", "Read mail");
+        let (h, i, n) = (app_lift("mail", &hylki).unwrap(), app_lift("mail", &install).unwrap(), app_lift("mail", &named).unwrap());
+        assert!(n > h && h > i, "{n} {h} {i}");
+        assert_eq!(app_lift("mail", &math), None);
+        assert_eq!(app_lift("ma", &hylki), None, "short queries keep the band order");
+    }
 
     #[test]
     fn name_coverage_ranks_exact_install_over_typo_matches() {
