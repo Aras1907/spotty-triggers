@@ -1905,8 +1905,8 @@ fn update_row(config: &Config) -> SearchResult {
         .map(|(_, v)| v);
     if *update_fetching().lock().unwrap() {
         return check_now_row(
+            gettext("Update"),
             gettext("Checking for updates…"),
-            gettext("Press Enter to check again"),
             "emblem-synchronizing-symbolic",
         );
     }
@@ -1919,14 +1919,16 @@ fn update_row(config: &Config) -> SearchResult {
         .collect();
     if list.is_empty() {
         return check_now_row(
-            gettext("Check for updates"),
-            gettext("Press Enter to check for updates"),
+            gettext("Update"),
+            gettext("No updates · Press Enter to check for new updates"),
             "emblem-synchronizing-symbolic",
         );
     }
     // One "Update" over the sources chosen in Settings; it runs as a
     // background operation.
-    let mut row = scopes_from(&list).swap_remove(0).row();
+    let mut scope = scopes_from(&list).swap_remove(0);
+    scope.title = gettext("Update");
+    let mut row = scope.row();
     if let Action::StartOperation { args, .. } = &mut row.action {
         *args = update_all_args(src);
     }
@@ -2509,7 +2511,8 @@ mod tests {
         *super::update_cache().lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
         let r = one();
         assert!(matches!(r.action, crate::search::Action::CheckUpdates), "{r:?}");
-        assert_eq!(r.subtitle.as_deref(), Some(crate::i18n::gettext("Press Enter to check for updates").as_str()));
+        assert_eq!(r.title, "Update");
+        assert!(r.subtitle.as_deref().unwrap_or("").contains("Press Enter to check for new updates"), "{r:?}");
         // Pending → one background update run.
         *super::update_cache().lock().unwrap() = Some((
             std::time::Instant::now(),
@@ -2520,7 +2523,9 @@ mod tests {
                 details: vec!["Firefox".into()],
             }],
         ));
-        assert!(matches!(one().action, crate::search::Action::StartOperation { .. }));
+        let r = one();
+        assert_eq!(r.title, "Update");
+        assert!(matches!(r.action, crate::search::Action::StartOperation { .. }));
         // Finished and a restart is needed → only the restart.
         super::REBOOT_REASON.store(super::REBOOT_OFFLINE_ARMED, Ordering::SeqCst);
         assert!(matches!(one().action, crate::search::Action::ConfirmRunCommand(_)));
