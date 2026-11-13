@@ -93,7 +93,7 @@ enum Backend {
 impl Backend {
     fn translate(&self, text: &str, source: &str, target: &str) -> Result<Cached, FetchErr> {
         let mut c = match self {
-            Backend::Google => post_google(text, source, target)?,
+            Backend::Google => google_translate(text, source, target)?,
             Backend::Api { id, region } => {
                 let key = stored_key(id);
                 let t = translate_api::translate(id, key.as_deref(), region, text, source, target)
@@ -433,22 +433,79 @@ fn google_form(text: &str) -> String {
     format!("q={}", urlencoding::encode(text))
 }
 
-/// The free endpoint's URL — languages only; the text goes in the body.
-fn google_url(source: &str, target: &str) -> String {
-    let hl = match system_base().as_str() {
+/// The interface language sent as `hl`: the system language.
+fn google_hl() -> String {
+    match system_base().as_str() {
         "" => "en".to_string(),
         b => b.to_string(),
-    };
+    }
+}
+
+/// The free endpoint's URL — languages only; the text goes in the body.
+fn google_url(source: &str, target: &str) -> String {
+    google_url_hl(source, target, &google_hl())
+}
+
+/// [`google_url`] with an explicit interface language.
+fn google_url_hl(source: &str, target: &str, hl: &str) -> String {
     format!(
         "{GOOGLE_URL}?client=gtx&sl={}&tl={}&hl={}&dt=t&dt=bd&dt=rm&dj=1",
         urlencoding::encode(source),
         urlencoding::encode(target),
-        urlencoding::encode(&hl),
+        urlencoding::encode(hl),
     )
 }
 
+/// Interface languages to detect with again when the first guess looks
+/// wrong: neither biases short words towards English.
+const REDETECT_HL: &[&str] = &["de", "es"];
+
+/// The text came back as it went in: nothing was translated.
+fn unchanged(text: &str, c: &Cached) -> bool {
+    c.translated.trim().to_lowercase() == text.trim().to_lowercase()
+}
+
+/// Google's detection leans to the `hl` language for short text: on an
+/// English system "Haus", "gato" or "bonjour" come back as English and
+/// untranslated. When a short text comes back unchanged, detect again with
+/// another interface language; if that finds a real source language,
+/// translate from it (with the user's `hl`, so dictionary labels stay in
+/// their language).
+fn google_translate(text: &str, source: &str, target: &str) -> Result<Cached, FetchErr> {
+    let hl = google_hl();
+    let first = post_google_hl(text, source, target, &hl)?;
+    if source != "auto" || !unchanged(text, &first) || text.split_whitespace().count() > 3 {
+        return Ok(first);
+    }
+    for alt in REDETECT_HL.iter().filter(|h| !same_lang(h, &hl)) {
+        let Ok(second) = post_google_hl(text, "auto", target, alt) else { continue };
+        let Some(src) = second.src.clone() else { continue };
+        if first.src.as_deref().is_some_and(|f| same_lang(f, &src)) {
+            continue;
+        }
+        // Translated now, or found to be in the target already (the
+        // two-way fallback then translates it the other way).
+        if !unchanged(text, &second) || same_lang(&src, target) {
+            return Ok(match post_google_hl(text, &src, target, &hl) {
+                Ok(mut c) => {
+                    c.src = Some(src);
+                    c
+                }
+                Err(_) => second,
+            });
+        }
+    }
+    Ok(first)
+}
+
 /// One HTTPS POST to Google's free endpoint (text over stdin, never argv).
+#[cfg(test)]
 fn post_google(text: &str, source: &str, target: &str) -> Result<Cached, FetchErr> {
+    post_google_hl(text, source, target, &google_hl())
+}
+
+/// [`post_google`] with an explicit interface language.
+fn post_google_hl(text: &str, source: &str, target: &str, hl: &str) -> Result<Cached, FetchErr> {
     if text.chars().count() > GOOGLE_MAX_CHARS {
         return Err(FetchErr {
             msg: gettext("text is longer than {n} characters")
@@ -457,7 +514,7 @@ fn post_google(text: &str, source: &str, target: &str) -> Result<Cached, FetchEr
     }
     let body = google_form(text);
     let out = crate::security::curl_post_form(
-        &google_url(source, target),
+        &google_url_hl(source, target, hl),
         body.as_bytes(),
         2_097_152,
         GOOGLE_TIMEOUT,
@@ -1531,6 +1588,20 @@ mod tests {
         assert_eq!(c.src.as_deref(), Some("es"));
         let c = Backend::Google.translate("dog", "auto", "de").expect("live call");
         assert!(!c.alts.is_empty(), "single words carry dictionary alternatives");
+    }
+
+    /// Short foreign words used to be detected as the system language (the
+    /// `hl` bias) and come back untranslated.
+    #[test]
+    #[ignore = "network"]
+    fn live_google_detects_short_foreign_words() {
+        for (word, want) in [("Haus", "house"), ("bonjour", "good morning"), ("gato", "cat")] {
+            let c = Backend::Google.translate(word, "auto", "en").expect("live call");
+            assert_eq!(c.translated.to_lowercase(), want, "{word}");
+            assert_ne!(c.src.as_deref(), Some("en"), "{word}");
+        }
+        let c = Backend::Google.translate("house", "auto", "en").expect("live call");
+        assert_eq!(c.src.as_deref(), Some("en"), "real English stays English");
     }
 
     /// The search calls `results()` on a background job thread. It used to
